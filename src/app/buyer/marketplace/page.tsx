@@ -419,14 +419,21 @@ export default function BuyerMarketplacePage() {
         ? listings
         : Array.from({ length: 6 }, (_, i) => ({
             index: i,
-            nftContract: `0x742d35Cc6634C0532925a3b844Bc454e4438f${i}4e`,
+            nftContract: `0x0000000000000000000000000000000000000000`, // Zero address marks as demo
             tokenId: BigInt(1000 + i),
-            seller: `0xABc${i}23Def456789012345678901234567890${i}bCd`,
+            seller: `0x0000000000000000000000000000000000000000`,
             priceWei: BigInt((0.05 + i * 0.02) * 1e18),
             sold: i === 2,
+            isDemo: true, // Mark as demo
           })),
     [listings]
   );
+
+  // Check if a listing is a demo
+  const isDemoListing = (listing: Listing) => {
+    return listing.nftContract === "0x0000000000000000000000000000000000000000" ||
+           listing.seller === "0x0000000000000000000000000000000000000000";
+  };
 
   React.useEffect(() => {
     loadListings();
@@ -642,19 +649,23 @@ export default function BuyerMarketplacePage() {
                     {/* Buy Button */}
                     <Button
                       size="sm"
-                      disabled={listing.sold || buyingIndex === listing.index}
+                      disabled={listing.sold || buyingIndex === listing.index || isDemoListing(listing)}
                       onClick={(e) => {
                         e.stopPropagation();
-                        handleBuyNowClick(listing);
+                        if (!isDemoListing(listing)) {
+                          handleBuyNowClick(listing);
+                        }
                       }}
                       className="gap-1.5"
                     >
                       <ShoppingCart className="h-3.5 w-3.5" />
-                      {listing.sold
-                        ? "Sold"
-                        : buyingIndex === listing.index
-                          ? "..."
-                          : "Buy Now"}
+                      {isDemoListing(listing)
+                        ? "Demo Only"
+                        : listing.sold
+                          ? "Sold"
+                          : buyingIndex === listing.index
+                            ? "..."
+                            : "Buy Now"}
                     </Button>
                   </div>
                 </div>
@@ -864,20 +875,25 @@ export default function BuyerMarketplacePage() {
                               className="w-full gap-2 py-3"
                               disabled={
                                 selectedListing.sold ||
-                                buyingIndex === selectedListing.index
+                                buyingIndex === selectedListing.index ||
+                                isDemoListing(selectedListing)
                               }
                               onClick={() => {
-                                handleBuyNowClick(selectedListing);
+                                if (!isDemoListing(selectedListing)) {
+                                  handleBuyNowClick(selectedListing);
+                                }
                               }}
                             >
                               <ShoppingCart className="h-4 w-4" />
-                              {selectedListing.sold
-                                ? "This item has been sold"
-                                : buyingIndex === selectedListing.index
-                                  ? "Processing..."
-                                  : wallet
-                                    ? `Buy Now for ${priceEth.toFixed(3)} ETH`
-                                    : "Connect Wallet to Buy"}
+                              {isDemoListing(selectedListing)
+                                ? "Demo Product - Cannot Purchase"
+                                : selectedListing.sold
+                                  ? "This item has been sold"
+                                  : buyingIndex === selectedListing.index
+                                    ? "Processing..."
+                                    : wallet
+                                      ? `Buy Now for ${priceEth.toFixed(3)} ETH`
+                                      : "Connect Wallet to Buy"}
                             </Button>
                           </div>
                         </>
