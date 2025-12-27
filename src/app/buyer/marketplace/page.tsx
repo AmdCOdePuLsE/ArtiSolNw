@@ -42,9 +42,11 @@ import { cn } from "@/lib/utils";
 import { getSession } from "@/lib/session";
 import {
   Purchase,
+  DeliveryAddress,
   getBuyerPurchases,
   generateDemoPurchases,
   buyerConfirmProduct,
+  addPurchase,
 } from "@/lib/purchaseStore";
 
 type Listing = {
@@ -152,6 +154,22 @@ export default function BuyerMarketplacePage() {
   const [feedbackRating, setFeedbackRating] = React.useState<"good" | "bad" | null>(null);
   const [isSubmittingFeedback, setIsSubmittingFeedback] = React.useState(false);
 
+  // Checkout modal state
+  const [checkoutListing, setCheckoutListing] = React.useState<Listing | null>(null);
+  const [checkoutStep, setCheckoutStep] = React.useState<"address" | "payment" | "success">("address");
+  const [deliveryAddress, setDeliveryAddress] = React.useState<DeliveryAddress>({
+    fullName: "",
+    phone: "",
+    addressLine1: "",
+    addressLine2: "",
+    city: "",
+    state: "",
+    pincode: "",
+  });
+  const [addressErrors, setAddressErrors] = React.useState<Partial<Record<keyof DeliveryAddress, string>>>({});
+  const [isProcessingPayment, setIsProcessingPayment] = React.useState(false);
+  const [paymentTxHash, setPaymentTxHash] = React.useState<string | null>(null);
+
   // Load purchases
   React.useEffect(() => {
     if (session?.email) {
@@ -209,6 +227,120 @@ export default function BuyerMarketplacePage() {
     setFeedbackPhotos([]);
     setFeedbackText("");
     setFeedbackRating(null);
+  };
+
+  // Checkout functions
+  const validateAddress = (): boolean => {
+    const errors: Partial<Record<keyof DeliveryAddress, string>> = {};
+    
+    if (!deliveryAddress.fullName.trim()) {
+      errors.fullName = "Full name is required";
+    }
+    if (!deliveryAddress.phone.trim()) {
+      errors.phone = "Phone number is required";
+    } else if (!/^[6-9]\d{9}$/.test(deliveryAddress.phone.replace(/\s/g, ""))) {
+      errors.phone = "Enter a valid 10-digit mobile number";
+    }
+    if (!deliveryAddress.addressLine1.trim()) {
+      errors.addressLine1 = "Address is required";
+    }
+    if (!deliveryAddress.city.trim()) {
+      errors.city = "City is required";
+    }
+    if (!deliveryAddress.state.trim()) {
+      errors.state = "State is required";
+    }
+    if (!deliveryAddress.pincode.trim()) {
+      errors.pincode = "Pincode is required";
+    } else if (!/^\d{6}$/.test(deliveryAddress.pincode)) {
+      errors.pincode = "Enter a valid 6-digit pincode";
+    }
+    
+    setAddressErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
+  const handleProceedToPayment = () => {
+    if (validateAddress()) {
+      setCheckoutStep("payment");
+    }
+  };
+
+  const handleConfirmPayment = async () => {
+    if (!checkoutListing || !wallet) return;
+    
+    setIsProcessingPayment(true);
+    setMarketError(null);
+    
+    try {
+      const provider = getBrowserProvider();
+      const signer = await provider.getSigner();
+      const contract = getMarketplaceWriteContract(signer);
+      
+      const tx = await contract.buyItem(checkoutListing.nftContract, checkoutListing.tokenId, {
+        value: checkoutListing.priceWei,
+      });
+      
+      await tx.wait();
+      setPaymentTxHash(tx.hash);
+      
+      // Add purchase to store with delivery address
+      const product = getProductForListing(checkoutListing.index);
+      const priceEth = Number(ethersUtils.formatEther(checkoutListing.priceWei));
+      const inr = inrPerEth ? priceEth * inrPerEth : priceEth * 250000;
+      
+      addPurchase({
+        productId: `${checkoutListing.nftContract}-${checkoutListing.tokenId.toString()}`,
+        productName: product.name,
+        productImage: product.image || "",
+        category: product.category,
+        priceInr: inr,
+        priceEth: priceEth,
+        buyerWallet: wallet,
+        buyerEmail: session?.email || "",
+        sellerWallet: checkoutListing.seller,
+        sellerEmail: "", // Will be matched by seller wallet
+        nftContract: checkoutListing.nftContract,
+        tokenId: checkoutListing.tokenId.toString(),
+        txHash: tx.hash,
+        status: "purchased",
+        deliveryAddress: deliveryAddress,
+      });
+      
+      refreshPurchases();
+      setCheckoutStep("success");
+      await loadListings();
+    } catch (e) {
+      setMarketError(e instanceof Error ? e.message : "Purchase failed");
+    } finally {
+      setIsProcessingPayment(false);
+    }
+  };
+
+  const resetCheckoutModal = () => {
+    setCheckoutListing(null);
+    setCheckoutStep("address");
+    setDeliveryAddress({
+      fullName: "",
+      phone: "",
+      addressLine1: "",
+      addressLine2: "",
+      city: "",
+      state: "",
+      pincode: "",
+    });
+    setAddressErrors({});
+    setPaymentTxHash(null);
+    setSelectedListing(null);
+  };
+
+  const handleBuyNowClick = (listing: Listing) => {
+    if (!wallet) {
+      connectWallet();
+      return;
+    }
+    setCheckoutListing(listing);
+    setCheckoutStep("address");
   };
 
   async function connectWallet() {
@@ -500,11 +632,7 @@ export default function BuyerMarketplacePage() {
                       disabled={listing.sold || buyingIndex === listing.index}
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (!wallet) {
-                          connectWallet();
-                        } else {
-                          handleBuy(listing);
-                        }
+                        handleBuyNowClick(listing);
                       }}
                       className="gap-1.5"
                     >
@@ -726,11 +854,7 @@ export default function BuyerMarketplacePage() {
                                 buyingIndex === selectedListing.index
                               }
                               onClick={() => {
-                                if (!wallet) {
-                                  connectWallet();
-                                } else {
-                                  handleBuy(selectedListing);
-                                }
+                                handleBuyNowClick(selectedListing);
                               }}
                             >
                               <ShoppingCart className="h-4 w-4" />
@@ -921,6 +1045,23 @@ export default function BuyerMarketplacePage() {
                                   </span>
                                 </div>
 
+                                {/* Delivery Address */}
+                                {purchase.deliveryAddress && (
+                                  <div className="mt-3 rounded-lg bg-slate-50 p-3 border border-slate-200">
+                                    <div className="flex items-center gap-2 text-xs font-semibold text-slate-700 mb-1">
+                                      <MapPin className="h-3.5 w-3.5 text-[#0D7B7A]" />
+                                      Delivery Address
+                                    </div>
+                                    <div className="text-xs text-slate-600">
+                                      <p className="font-medium">{purchase.deliveryAddress.fullName}</p>
+                                      <p>{purchase.deliveryAddress.addressLine1}</p>
+                                      {purchase.deliveryAddress.addressLine2 && <p>{purchase.deliveryAddress.addressLine2}</p>}
+                                      <p>{purchase.deliveryAddress.city}, {purchase.deliveryAddress.state} - {purchase.deliveryAddress.pincode}</p>
+                                      <p className="mt-1">📞 {purchase.deliveryAddress.phone}</p>
+                                    </div>
+                                  </div>
+                                )}
+
                                 {/* Action Buttons */}
                                 <div className="mt-4 flex flex-wrap gap-2">
                                   {purchase.status === "delivered" && (
@@ -1000,6 +1141,368 @@ export default function BuyerMarketplacePage() {
                 </motion.div>
               </div>
             )}
+
+            {/* Checkout Modal */}
+            <AnimatePresence>
+              {checkoutListing && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+                  onClick={(e) => {
+                    if (e.target === e.currentTarget && checkoutStep !== "success") resetCheckoutModal();
+                  }}
+                >
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                    className="relative max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-3xl bg-white shadow-2xl"
+                  >
+                    {/* Close Button */}
+                    {checkoutStep !== "success" && (
+                      <button
+                        onClick={resetCheckoutModal}
+                        className="absolute right-4 top-4 z-10 rounded-full bg-slate-100 p-2 transition hover:bg-slate-200"
+                      >
+                        <X className="h-5 w-5 text-slate-600" />
+                      </button>
+                    )}
+
+                    {/* Header */}
+                    <div className="border-b border-slate-200 px-6 py-4">
+                      <h2 className="text-xl font-bold text-slate-900">
+                        {checkoutStep === "address" && "Delivery Information"}
+                        {checkoutStep === "payment" && "Confirm Payment"}
+                        {checkoutStep === "success" && "Purchase Successful!"}
+                      </h2>
+                      <p className="mt-1 text-sm text-slate-500">
+                        {checkoutStep === "address" && "Enter your delivery address to continue"}
+                        {checkoutStep === "payment" && "Review and confirm your purchase"}
+                        {checkoutStep === "success" && "Your order has been placed successfully"}
+                      </p>
+                    </div>
+
+                    <div className="p-6">
+                      {/* Product Summary */}
+                      {checkoutStep !== "success" && (
+                        <div className="mb-6 flex items-center gap-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                          <div className="h-16 w-16 rounded-xl bg-gradient-to-br from-[#0D7B7A]/20 to-[#D4A574]/20 flex items-center justify-center">
+                            {(() => {
+                              const product = getProductForListing(checkoutListing.index);
+                              return product.image ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={product.image} alt={product.name} className="h-full w-full rounded-xl object-cover" />
+                              ) : (
+                                <span className="text-2xl">🎨</span>
+                              );
+                            })()}
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="font-semibold text-slate-900">
+                              {getProductForListing(checkoutListing.index).name}
+                            </h3>
+                            <div className="mt-1 flex items-center gap-2">
+                              <span className="text-lg font-bold text-[#0D7B7A]">
+                                {Number(ethersUtils.formatEther(checkoutListing.priceWei)).toFixed(4)} ETH
+                              </span>
+                              <span className="text-sm text-slate-500">
+                                {inrPerEth ? formatInr(Number(ethersUtils.formatEther(checkoutListing.priceWei)) * inrPerEth) : ""}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Step: Address Form */}
+                      {checkoutStep === "address" && (
+                        <div className="space-y-4">
+                          <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">
+                              Full Name <span className="text-red-500">*</span>
+                            </label>
+                            <input
+                              type="text"
+                              value={deliveryAddress.fullName}
+                              onChange={(e) => setDeliveryAddress(prev => ({ ...prev, fullName: e.target.value }))}
+                              placeholder="Enter your full name"
+                              className={cn(
+                                "w-full rounded-xl border px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#0D7B7A]/20",
+                                addressErrors.fullName ? "border-red-300 focus:border-red-500" : "border-slate-200 focus:border-[#0D7B7A]"
+                              )}
+                            />
+                            {addressErrors.fullName && (
+                              <p className="mt-1 text-xs text-red-500">{addressErrors.fullName}</p>
+                            )}
+                          </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">
+                              Phone Number <span className="text-red-500">*</span>
+                            </label>
+                            <input
+                              type="tel"
+                              value={deliveryAddress.phone}
+                              onChange={(e) => setDeliveryAddress(prev => ({ ...prev, phone: e.target.value }))}
+                              placeholder="10-digit mobile number"
+                              className={cn(
+                                "w-full rounded-xl border px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#0D7B7A]/20",
+                                addressErrors.phone ? "border-red-300 focus:border-red-500" : "border-slate-200 focus:border-[#0D7B7A]"
+                              )}
+                            />
+                            {addressErrors.phone && (
+                              <p className="mt-1 text-xs text-red-500">{addressErrors.phone}</p>
+                            )}
+                          </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">
+                              Address Line 1 <span className="text-red-500">*</span>
+                            </label>
+                            <input
+                              type="text"
+                              value={deliveryAddress.addressLine1}
+                              onChange={(e) => setDeliveryAddress(prev => ({ ...prev, addressLine1: e.target.value }))}
+                              placeholder="House/Flat No., Building Name, Street"
+                              className={cn(
+                                "w-full rounded-xl border px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#0D7B7A]/20",
+                                addressErrors.addressLine1 ? "border-red-300 focus:border-red-500" : "border-slate-200 focus:border-[#0D7B7A]"
+                              )}
+                            />
+                            {addressErrors.addressLine1 && (
+                              <p className="mt-1 text-xs text-red-500">{addressErrors.addressLine1}</p>
+                            )}
+                          </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">
+                              Address Line 2 (Optional)
+                            </label>
+                            <input
+                              type="text"
+                              value={deliveryAddress.addressLine2}
+                              onChange={(e) => setDeliveryAddress(prev => ({ ...prev, addressLine2: e.target.value }))}
+                              placeholder="Landmark, Area"
+                              className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm focus:border-[#0D7B7A] focus:outline-none focus:ring-2 focus:ring-[#0D7B7A]/20"
+                            />
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-sm font-medium text-slate-700 mb-1">
+                                City <span className="text-red-500">*</span>
+                              </label>
+                              <input
+                                type="text"
+                                value={deliveryAddress.city}
+                                onChange={(e) => setDeliveryAddress(prev => ({ ...prev, city: e.target.value }))}
+                                placeholder="City"
+                                className={cn(
+                                  "w-full rounded-xl border px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#0D7B7A]/20",
+                                  addressErrors.city ? "border-red-300 focus:border-red-500" : "border-slate-200 focus:border-[#0D7B7A]"
+                                )}
+                              />
+                              {addressErrors.city && (
+                                <p className="mt-1 text-xs text-red-500">{addressErrors.city}</p>
+                              )}
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-slate-700 mb-1">
+                                State <span className="text-red-500">*</span>
+                              </label>
+                              <input
+                                type="text"
+                                value={deliveryAddress.state}
+                                onChange={(e) => setDeliveryAddress(prev => ({ ...prev, state: e.target.value }))}
+                                placeholder="State"
+                                className={cn(
+                                  "w-full rounded-xl border px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#0D7B7A]/20",
+                                  addressErrors.state ? "border-red-300 focus:border-red-500" : "border-slate-200 focus:border-[#0D7B7A]"
+                                )}
+                              />
+                              {addressErrors.state && (
+                                <p className="mt-1 text-xs text-red-500">{addressErrors.state}</p>
+                              )}
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">
+                              Pincode <span className="text-red-500">*</span>
+                            </label>
+                            <input
+                              type="text"
+                              value={deliveryAddress.pincode}
+                              onChange={(e) => setDeliveryAddress(prev => ({ ...prev, pincode: e.target.value }))}
+                              placeholder="6-digit pincode"
+                              maxLength={6}
+                              className={cn(
+                                "w-full rounded-xl border px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#0D7B7A]/20",
+                                addressErrors.pincode ? "border-red-300 focus:border-red-500" : "border-slate-200 focus:border-[#0D7B7A]"
+                              )}
+                            />
+                            {addressErrors.pincode && (
+                              <p className="mt-1 text-xs text-red-500">{addressErrors.pincode}</p>
+                            )}
+                          </div>
+
+                          <Button
+                            className="w-full py-3 mt-4 bg-gradient-to-r from-[#0D7B7A] to-[#14a8a6]"
+                            onClick={handleProceedToPayment}
+                          >
+                            Proceed to Payment
+                          </Button>
+                        </div>
+                      )}
+
+                      {/* Step: Payment Confirmation */}
+                      {checkoutStep === "payment" && (
+                        <div className="space-y-4">
+                          {/* Delivery Address Summary */}
+                          <div className="rounded-xl border border-slate-200 p-4">
+                            <div className="flex items-center justify-between mb-2">
+                              <h4 className="font-semibold text-slate-900 flex items-center gap-2">
+                                <MapPin className="h-4 w-4 text-[#0D7B7A]" />
+                                Delivery Address
+                              </h4>
+                              <button
+                                onClick={() => setCheckoutStep("address")}
+                                className="text-sm text-[#0D7B7A] hover:underline"
+                              >
+                                Edit
+                              </button>
+                            </div>
+                            <div className="text-sm text-slate-600">
+                              <p className="font-medium text-slate-900">{deliveryAddress.fullName}</p>
+                              <p>{deliveryAddress.addressLine1}</p>
+                              {deliveryAddress.addressLine2 && <p>{deliveryAddress.addressLine2}</p>}
+                              <p>{deliveryAddress.city}, {deliveryAddress.state} - {deliveryAddress.pincode}</p>
+                              <p className="mt-1">📞 {deliveryAddress.phone}</p>
+                            </div>
+                          </div>
+
+                          {/* Payment Info */}
+                          <div className="rounded-xl border border-[#0D7B7A]/20 bg-[#0D7B7A]/5 p-4">
+                            <h4 className="font-semibold text-slate-900 flex items-center gap-2 mb-3">
+                              <Shield className="h-4 w-4 text-[#0D7B7A]" />
+                              Secure Escrow Payment
+                            </h4>
+                            <div className="space-y-2 text-sm">
+                              <div className="flex justify-between">
+                                <span className="text-slate-600">Item Price</span>
+                                <span className="font-medium">{Number(ethersUtils.formatEther(checkoutListing.priceWei)).toFixed(4)} ETH</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-slate-600">Platform Fee</span>
+                                <span className="font-medium">Included</span>
+                              </div>
+                              <div className="border-t border-slate-200 pt-2 flex justify-between">
+                                <span className="font-semibold text-slate-900">Total</span>
+                                <span className="font-bold text-[#0D7B7A]">{Number(ethersUtils.formatEther(checkoutListing.priceWei)).toFixed(4)} ETH</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Info Box */}
+                          <div className="flex items-start gap-3 p-4 rounded-xl bg-blue-50 border border-blue-200">
+                            <AlertCircle className="h-5 w-5 text-blue-600 shrink-0 mt-0.5" />
+                            <div className="text-sm text-blue-700">
+                              <p className="font-semibold">How Escrow Works</p>
+                              <p className="mt-1">Your payment will be held securely in escrow until you confirm receipt of the product. The seller will ship the item to your address.</p>
+                            </div>
+                          </div>
+
+                          {marketError && (
+                            <div className="flex items-center gap-2 p-3 rounded-xl bg-red-50 border border-red-200 text-sm text-red-700">
+                              <AlertCircle className="h-4 w-4" />
+                              {marketError}
+                            </div>
+                          )}
+
+                          <div className="flex gap-3">
+                            <Button
+                              variant="outline"
+                              className="flex-1 py-3"
+                              onClick={() => setCheckoutStep("address")}
+                              disabled={isProcessingPayment}
+                            >
+                              Back
+                            </Button>
+                            <Button
+                              className="flex-1 py-3 bg-gradient-to-r from-[#0D7B7A] to-[#14a8a6]"
+                              onClick={handleConfirmPayment}
+                              disabled={isProcessingPayment}
+                            >
+                              {isProcessingPayment ? (
+                                <>
+                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                  Processing...
+                                </>
+                              ) : (
+                                <>
+                                  <ShoppingCart className="mr-2 h-4 w-4" />
+                                  Confirm & Pay
+                                </>
+                              )}
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Step: Success */}
+                      {checkoutStep === "success" && (
+                        <div className="text-center py-6">
+                          <div className="mx-auto w-20 h-20 rounded-full bg-green-100 flex items-center justify-center mb-4">
+                            <CheckCircle2 className="h-10 w-10 text-green-600" />
+                          </div>
+                          <h3 className="text-xl font-bold text-slate-900 mb-2">
+                            Purchase Successful!
+                          </h3>
+                          <p className="text-slate-600 mb-4">
+                            Your payment is now held in escrow. The seller will ship the product to your address.
+                          </p>
+                          
+                          {paymentTxHash && (
+                            <div className="mb-6 p-3 rounded-xl bg-slate-50 border border-slate-200">
+                              <p className="text-xs text-slate-500 mb-1">Transaction Hash</p>
+                              <a
+                                href={`https://sepolia.etherscan.io/tx/${paymentTxHash}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-sm text-[#0D7B7A] hover:underline flex items-center justify-center gap-1"
+                              >
+                                {paymentTxHash.slice(0, 10)}...{paymentTxHash.slice(-8)}
+                                <ExternalLink className="h-3 w-3" />
+                              </a>
+                            </div>
+                          )}
+
+                          <div className="space-y-3">
+                            <Button
+                              className="w-full py-3 bg-gradient-to-r from-[#0D7B7A] to-[#14a8a6]"
+                              onClick={() => {
+                                resetCheckoutModal();
+                                setActiveTab("profile");
+                              }}
+                            >
+                              View My Purchases
+                            </Button>
+                            <Button
+                              variant="outline"
+                              className="w-full py-3"
+                              onClick={resetCheckoutModal}
+                            >
+                              Continue Shopping
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </motion.div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Feedback Modal */}
             <AnimatePresence>

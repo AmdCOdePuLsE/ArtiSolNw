@@ -25,6 +25,17 @@ export type PurchaseStatus =
   | "disputed" // Issue between buyer and seller (blockchain: DISPUTED)
   | "completed"; // NFT transferred to buyer (blockchain: COMPLETED)
 
+// Delivery address type
+export type DeliveryAddress = {
+  fullName: string;
+  phone: string;
+  addressLine1: string;
+  addressLine2?: string;
+  city: string;
+  state: string;
+  pincode: string;
+};
+
 export type Purchase = {
   id: string;
   productId: string;
@@ -48,6 +59,8 @@ export type Purchase = {
   sellerResponse: string;
   completedDate: Date | null;
   nftTransferTxHash: string | null;
+  // Delivery details
+  deliveryAddress?: DeliveryAddress;
   // Blockchain sync fields
   blockchainStatus?: BlockchainStatus;
   escrowAmount?: string;
