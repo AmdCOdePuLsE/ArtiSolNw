@@ -1422,7 +1422,7 @@ export default function BuyerMarketplacePage() {
 
                           <div className="flex gap-3">
                             <Button
-                              variant="outline"
+                              variant="ghost"
                               className="flex-1 py-3"
                               onClick={() => setCheckoutStep("address")}
                               disabled={isProcessingPayment}
@@ -1489,7 +1489,7 @@ export default function BuyerMarketplacePage() {
                               View My Purchases
                             </Button>
                             <Button
-                              variant="outline"
+                              variant="ghost"
                               className="w-full py-3"
                               onClick={resetCheckoutModal}
                             >
