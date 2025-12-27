@@ -267,13 +267,26 @@ export default function BuyerMarketplacePage() {
   };
 
   const handleConfirmPayment = async () => {
-    if (!checkoutListing || !wallet) return;
+    // Check if wallet is connected
+    if (!wallet) {
+      setMarketError("Please connect your wallet first");
+      return;
+    }
+    
+    if (!checkoutListing) {
+      setMarketError("No product selected");
+      return;
+    }
     
     setIsProcessingPayment(true);
     setMarketError(null);
     
     try {
       const provider = getBrowserProvider();
+      
+      // Request account access to ensure wallet is connected
+      await provider.send("eth_requestAccounts", []);
+      
       const signer = await provider.getSigner();
       const contract = getMarketplaceWriteContract(signer);
       
@@ -1382,6 +1395,23 @@ export default function BuyerMarketplacePage() {
                             </div>
                           </div>
 
+                          {/* Wallet Connection Warning */}
+                          {!wallet && (
+                            <div className="flex items-center justify-between p-4 rounded-xl bg-amber-50 border border-amber-200">
+                              <div className="flex items-center gap-2 text-sm text-amber-700">
+                                <AlertCircle className="h-4 w-4" />
+                                <span>Please connect your wallet to proceed</span>
+                              </div>
+                              <Button
+                                size="sm"
+                                onClick={connectWallet}
+                                className="bg-amber-500 hover:bg-amber-600"
+                              >
+                                Connect Wallet
+                              </Button>
+                            </div>
+                          )}
+
                           {/* Payment Info */}
                           <div className="rounded-xl border border-[#0D7B7A]/20 bg-[#0D7B7A]/5 p-4">
                             <h4 className="font-semibold text-slate-900 flex items-center gap-2 mb-3">
@@ -1432,12 +1462,17 @@ export default function BuyerMarketplacePage() {
                             <Button
                               className="flex-1 py-3 bg-gradient-to-r from-[#0D7B7A] to-[#14a8a6]"
                               onClick={handleConfirmPayment}
-                              disabled={isProcessingPayment}
+                              disabled={isProcessingPayment || !wallet}
                             >
                               {isProcessingPayment ? (
                                 <>
                                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                   Processing...
+                                </>
+                              ) : !wallet ? (
+                                <>
+                                  <AlertCircle className="mr-2 h-4 w-4" />
+                                  Connect Wallet First
                                 </>
                               ) : (
                                 <>
