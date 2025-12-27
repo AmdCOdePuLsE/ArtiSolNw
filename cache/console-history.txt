@@ -1,0 +1,2 @@
+.exit
+const [sender] = await ethers.getSigners(); await sender.sendTransaction({ to: "0xc33424d1ffcc913a89ab52f52f44685eda35b79b", value: ethers.parseEther("100") }); console.log("Sent 100 ETH!");

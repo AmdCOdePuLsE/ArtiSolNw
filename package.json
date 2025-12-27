@@ -1,0 +1,53 @@
+{
+  "name": "nft-marketplace-india",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "hh": "cross-env HARDHAT_DISABLE_TELEMETRY=1 HARDHAT_DISABLE_TELEMETRY_PROMPT=1 hardhat",
+    "hh:compile": "cross-env HARDHAT_DISABLE_TELEMETRY=1 HARDHAT_DISABLE_TELEMETRY_PROMPT=1 hardhat compile",
+    "hh:deploy": "cross-env HARDHAT_DISABLE_TELEMETRY=1 HARDHAT_DISABLE_TELEMETRY_PROMPT=1 hardhat run scripts/deploy.ts",
+    "hh:deploy:sepolia": "cross-env HARDHAT_DISABLE_TELEMETRY=1 HARDHAT_DISABLE_TELEMETRY_PROMPT=1 hardhat run scripts/deploy.ts --network sepolia",
+    "hh:verify": "cross-env HARDHAT_DISABLE_TELEMETRY=1 HARDHAT_DISABLE_TELEMETRY_PROMPT=1 hardhat run scripts/verify.ts --network sepolia",
+    "hh:node": "cross-env HARDHAT_DISABLE_TELEMETRY=1 HARDHAT_DISABLE_TELEMETRY_PROMPT=1 hardhat node",
+    "hh:deploy:localhost": "cross-env HARDHAT_DISABLE_TELEMETRY=1 HARDHAT_DISABLE_TELEMETRY_PROMPT=1 hardhat run scripts/deploy.ts --network localhost"
+  },
+  "dependencies": {
+    "@headlessui/react": "^2.2.9",
+    "@heroicons/react": "^2.2.0",
+    "@openzeppelin/contracts": "^5.4.0",
+    "clsx": "^2.1.1",
+    "ethers": "^5.7.2",
+    "framer-motion": "^12.23.26",
+    "lucide-react": "^0.562.0",
+    "next": "16.1.1",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "tailwind-merge": "^3.4.0",
+    "viem": "^2.43.3"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "^4.0.3",
+    "@tailwindcss/postcss": "^4",
+    "@types/caseless": "^0.12.5",
+    "@types/long": "^4.0.2",
+    "@types/node": "^20",
+    "@types/parse-json": "^4.0.2",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/request": "^2.48.13",
+    "@types/tough-cookie": "^4.0.5",
+    "cross-env": "^10.1.0",
+    "dotenv": "^17.2.3",
+    "eslint": "^9",
+    "eslint-config-next": "16.1.1",
+    "hardhat": "^3.1.0",
+    "tailwindcss": "^4",
+    "ts-node": "^10.9.2",
+    "typescript": "^5"
+  }
+}
