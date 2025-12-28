@@ -367,12 +367,19 @@ export default function SellerDashboardPage() {
 
       setGeneratedToken(tokenId);
 
-      // Now approve the marketplace to transfer this NFT
-      console.log("Approving marketplace to transfer NFT...");
+      // Check if marketplace is already approved for all tokens (one-time approval)
       const marketplaceAddress = getMarketplaceAddress();
-      const approveTx = await nftContract.approve(marketplaceAddress, tokenId);
-      await approveTx.wait();
-      console.log("Marketplace approved");
+      const isApproved = await nftContract.isApprovedForAll(signerAddress, marketplaceAddress);
+      
+      if (!isApproved) {
+        // First time: Set approval for all future NFTs (one-time)
+        console.log("Setting marketplace approval (one-time)...");
+        const approveTx = await nftContract.setApprovalForAll(marketplaceAddress, true);
+        await approveTx.wait();
+        console.log("Marketplace approved for all future NFTs");
+      } else {
+        console.log("Marketplace already approved");
+      }
 
       // Now list the NFT on the marketplace
       console.log("Listing NFT on marketplace...");
