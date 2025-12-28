@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { getSession } from "@/lib/session";
 import { getBrowserProvider, getRpcProvider } from "@/lib/web3";
-import { getMarketplaceWriteContract } from "@/lib/contracts/marketplace";
+import { getMarketplaceWriteContract, getMarketplaceAddress } from "@/lib/contracts/marketplace";
 import { getMarketplaceReadContract } from "@/lib/contracts/marketplace";
 import {
   getArtisolNFTWriteContract,
@@ -366,6 +366,30 @@ export default function SellerDashboardPage() {
       }
 
       setGeneratedToken(tokenId);
+
+      // Now approve the marketplace to transfer this NFT
+      console.log("Approving marketplace to transfer NFT...");
+      const marketplaceAddress = getMarketplaceAddress();
+      const approveTx = await nftContract.approve(marketplaceAddress, tokenId);
+      await approveTx.wait();
+      console.log("Marketplace approved");
+
+      // Now list the NFT on the marketplace
+      console.log("Listing NFT on marketplace...");
+      const marketplaceContract = getMarketplaceWriteContract(signer);
+      
+      // Convert INR price to ETH (approximate: 1 ETH = 250000 INR)
+      const ETH_TO_INR = 250000;
+      const priceEth = Number(priceInr) / ETH_TO_INR;
+      const priceWei = BigInt(Math.floor(priceEth * 1e18));
+      
+      const listTx = await marketplaceContract.listItem(
+        contractAddress,  // NFT contract address
+        tokenId,          // Token ID
+        priceWei          // Price in wei
+      );
+      await listTx.wait();
+      console.log("NFT listed on marketplace!");
 
       // Add to my products
       const newProduct: ProductListing = {
