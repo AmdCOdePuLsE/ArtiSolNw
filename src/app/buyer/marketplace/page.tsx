@@ -49,6 +49,13 @@ import {
   addPurchase,
 } from "@/lib/purchaseStore";
 
+type NFTMetadata = {
+  name: string;
+  description: string;
+  image: string;
+  attributes?: Array<{ trait_type: string; value: string }>;
+};
+
 type Listing = {
   index: number;
   nftContract: string;
@@ -56,7 +63,25 @@ type Listing = {
   seller: string;
   priceWei: bigint;
   sold: boolean;
+  // Real metadata from blockchain
+  metadata?: NFTMetadata;
 };
+
+// Parse tokenURI to get metadata
+function parseTokenURI(tokenURI: string): NFTMetadata | null {
+  try {
+    if (tokenURI.startsWith("data:application/json;base64,")) {
+      const base64 = tokenURI.replace("data:application/json;base64,", "");
+      const jsonString = atob(base64);
+      return JSON.parse(jsonString) as NFTMetadata;
+    }
+    // Handle IPFS or HTTP URIs if needed in future
+    return null;
+  } catch (e) {
+    console.error("Failed to parse tokenURI:", e);
+    return null;
+  }
+}
 
 // Mock product details for demo
 const mockProductDetails: Record<
@@ -108,9 +133,31 @@ const productImages: Record<string, string> = {
   "Madhubani Art": "/kalamkari.jpg",
 };
 
-function getProductForListing(index: number) {
+// Get product details - use real metadata if available, fallback to demo
+function getProductForListing(listing: Listing) {
+  // If we have real metadata from blockchain, use it
+  if (listing.metadata) {
+    const category = listing.metadata.attributes?.find(a => a.trait_type === "Category")?.value || "Handicraft";
+    const priceInr = listing.metadata.attributes?.find(a => a.trait_type === "Price (INR)")?.value || "";
+    const artisan = listing.metadata.attributes?.find(a => a.trait_type === "Artisan")?.value || "";
+    
+    return {
+      name: listing.metadata.name || "Artisan Product",
+      image: listing.metadata.image || null,
+      category: category,
+      description: listing.metadata.description || "Handcrafted authentic product from Indian artisans.",
+      origin: "India",
+      craftsman: artisan ? shortenAddress(artisan) : "Verified Artisan",
+      materials: "Authentic Materials",
+      createdDate: new Date().toLocaleDateString("en-IN", { month: "long", year: "numeric" }),
+      certificateId: `ARTISOL-${listing.tokenId.toString()}`,
+      priceInr: priceInr,
+    };
+  }
+  
+  // Fallback to demo data for demo listings
   const base = mockProductDetails.default;
-  const name = productNames[index % productNames.length];
+  const name = productNames[listing.index % productNames.length];
   return {
     ...base,
     name,
@@ -298,7 +345,7 @@ export default function BuyerMarketplacePage() {
       setPaymentTxHash(tx.hash);
       
       // Add purchase to store with delivery address
-      const product = getProductForListing(checkoutListing.index);
+      const product = getProductForListing(checkoutListing);
       const priceEth = Number(ethersUtils.formatEther(checkoutListing.priceWei));
       const inr = inrPerEth ? priceEth * inrPerEth : priceEth * 250000;
       
@@ -380,9 +427,11 @@ export default function BuyerMarketplacePage() {
       // Use fallback values directly for reliability
       const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL || "https://eth-sepolia.g.alchemy.com/v2/hgBu-UD8N-2ZoBs_Ts17o";
       const marketplaceAddr = process.env.NEXT_PUBLIC_MARKETPLACE_ADDRESS || "0x278a4E4E067406c2EA1588E19F58957BD543715a";
+      const nftContractAddr = process.env.NEXT_PUBLIC_NFT_CONTRACT_ADDRESS || "0x4BF3114037896dEaEAEE3299306C57f2f95aB664";
       
       console.log("RPC URL:", rpcUrl);
       console.log("Marketplace Address:", marketplaceAddr);
+      console.log("NFT Contract Address:", nftContractAddr);
       
       // Create provider directly with ethers
       const { providers: ethersProviders, Contract } = await import("ethers");
@@ -394,15 +443,21 @@ export default function BuyerMarketplacePage() {
         "function getListingByIndex(uint256 index) view returns (address nftContract, uint256 tokenId, address seller, uint256 priceWei, bool sold)"
       ];
       
-      const contract = new Contract(marketplaceAddr, marketplaceAbi, provider);
+      // NFT ABI for getting tokenURI
+      const nftAbi = [
+        "function tokenURI(uint256 tokenId) view returns (string)"
+      ];
       
-      const count = await contract.listingCount();
+      const marketplaceContract = new Contract(marketplaceAddr, marketplaceAbi, provider);
+      const nftContract = new Contract(nftContractAddr, nftAbi, provider);
+      
+      const count = await marketplaceContract.listingCount();
       const n = Number(count);
       console.log("Found", n, "listings on contract");
 
       const nextListings: Listing[] = [];
       for (let i = 0; i < n; i++) {
-        const row = await contract.getListingByIndex(i);
+        const row = await marketplaceContract.getListingByIndex(i);
         console.log("Listing", i, ":", {
           nftContract: row.nftContract,
           tokenId: row.tokenId.toString(),
@@ -410,6 +465,20 @@ export default function BuyerMarketplacePage() {
           priceWei: row.priceWei.toString(),
           sold: row.sold
         });
+        
+        // Fetch the NFT metadata from tokenURI
+        let metadata: NFTMetadata | undefined;
+        try {
+          const tokenURI = await nftContract.tokenURI(row.tokenId);
+          console.log("Token", row.tokenId.toString(), "URI:", tokenURI.substring(0, 50) + "...");
+          metadata = parseTokenURI(tokenURI) || undefined;
+          if (metadata) {
+            console.log("Token", row.tokenId.toString(), "metadata:", metadata.name);
+          }
+        } catch (e) {
+          console.error("Failed to fetch tokenURI for token", row.tokenId.toString(), e);
+        }
+        
         nextListings.push({
           index: i,
           nftContract: row.nftContract as string,
@@ -417,6 +486,7 @@ export default function BuyerMarketplacePage() {
           seller: row.seller as string,
           priceWei: row.priceWei as bigint,
           sold: row.sold as boolean,
+          metadata,
         });
       }
 
@@ -604,7 +674,7 @@ export default function BuyerMarketplacePage() {
                 {/* Product Grid */}
                 <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                   {demoListings.map((listing) => {
-                    const product = getProductForListing(listing.index);
+                    const product = getProductForListing(listing);
                     const priceEth = Number(ethersUtils.formatEther(listing.priceWei));
                     const inr = inrPerEth ? priceEth * inrPerEth : null;
                     const nftCode = `${listing.nftContract.slice(0, 10)}...${listing.tokenId.toString()}`;
@@ -757,7 +827,7 @@ export default function BuyerMarketplacePage() {
                 <div className="grid md:grid-cols-2">
                   {/* Image Section */}
                   {(() => {
-                    const product = getProductForListing(selectedListing.index);
+                    const product = getProductForListing(selectedListing);
                     const hasImage = !!product.image;
                     return (
                       <div className={cn(
@@ -796,7 +866,7 @@ export default function BuyerMarketplacePage() {
                   <div className="p-6 md:p-8">
                     {(() => {
                       const product = getProductForListing(
-                        selectedListing.index
+                        selectedListing
                       );
                       const priceEth = Number(
                         ethersUtils.formatEther(selectedListing.priceWei)
@@ -1274,7 +1344,7 @@ export default function BuyerMarketplacePage() {
                         <div className="mb-6 flex items-center gap-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
                           <div className="h-16 w-16 rounded-xl bg-gradient-to-br from-[#0D7B7A]/20 to-[#D4A574]/20 flex items-center justify-center">
                             {(() => {
-                              const product = getProductForListing(checkoutListing.index);
+                              const product = getProductForListing(checkoutListing);
                               return product.image ? (
                                 // eslint-disable-next-line @next/next/no-img-element
                                 <img src={product.image} alt={product.name} className="h-full w-full rounded-xl object-cover" />
@@ -1285,7 +1355,7 @@ export default function BuyerMarketplacePage() {
                           </div>
                           <div className="flex-1">
                             <h3 className="font-semibold text-slate-900">
-                              {getProductForListing(checkoutListing.index).name}
+                              {getProductForListing(checkoutListing).name}
                             </h3>
                             <div className="mt-1 flex items-center gap-2">
                               <span className="text-lg font-bold text-[#0D7B7A]">
