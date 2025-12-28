@@ -227,6 +227,17 @@ export default function BuyerMarketplacePage() {
   // Selected blockchain purchase for confirm modal
   const [selectedBlockchainPurchase, setSelectedBlockchainPurchase] = React.useState<BlockchainPurchase | null>(null);
   
+  // Transaction details for showing fund transfer
+  const [transactionDetails, setTransactionDetails] = React.useState<{
+    txHash: string;
+    sellerAddress: string;
+    sellerBalanceBefore: string;
+    sellerBalanceAfter: string;
+    amountReleased: string;
+    platformFee: string;
+    netToSeller: string;
+  } | null>(null);
+  
   // Feedback modal state
   const [feedbackPurchase, setFeedbackPurchase] = React.useState<Purchase | null>(null);
   const [feedbackPhotos, setFeedbackPhotos] = React.useState<string[]>([]);
@@ -434,6 +445,7 @@ export default function BuyerMarketplacePage() {
     setTermsAccepted(false);
     setConfirmStep("upload");
     setSelectedBlockchainPurchase(null);
+    setTransactionDetails(null);
   };
 
   // Handle blockchain purchase confirmation (from contract directly)
@@ -446,6 +458,7 @@ export default function BuyerMarketplacePage() {
     }
     
     setIsSubmittingFeedback(true);
+    setTransactionDetails(null);
     
     try {
       const provider = getBrowserProvider();
@@ -481,6 +494,15 @@ export default function BuyerMarketplacePage() {
       const signer = await provider.getSigner();
       const contract = getMarketplaceWriteContract(signer);
       
+      // Get seller balance BEFORE confirmation
+      const sellerAddress = selectedBlockchainPurchase.seller;
+      const sellerBalanceBefore = await provider.getBalance(sellerAddress);
+      
+      // Calculate expected amounts (2.5% platform fee)
+      const priceWei = selectedBlockchainPurchase.priceWei;
+      const platformFee = (priceWei * BigInt(25)) / BigInt(1000); // 2.5%
+      const netToSeller = priceWei - platformFee;
+      
       // Call confirmDelivery on the blockchain - this triggers NFT transfer and fund release
       const tx = await contract.confirmDelivery(
         selectedBlockchainPurchase.nftContract, 
@@ -488,14 +510,25 @@ export default function BuyerMarketplacePage() {
       );
       await tx.wait();
       
+      // Get seller balance AFTER confirmation
+      const sellerBalanceAfter = await provider.getBalance(sellerAddress);
+      
+      // Save transaction details for display
+      setTransactionDetails({
+        txHash: tx.hash,
+        sellerAddress,
+        sellerBalanceBefore: ethersUtils.formatEther(sellerBalanceBefore),
+        sellerBalanceAfter: ethersUtils.formatEther(sellerBalanceAfter),
+        amountReleased: ethersUtils.formatEther(priceWei),
+        platformFee: ethersUtils.formatEther(platformFee),
+        netToSeller: ethersUtils.formatEther(netToSeller),
+      });
+      
       // Refresh blockchain purchases
       await fetchBlockchainPurchases();
       setConfirmStep("confirm"); // Show success state
       
-      // Auto close after showing success
-      setTimeout(() => {
-        resetFeedbackModal();
-      }, 3000);
+      // Don't auto close - let user see the details
     } catch (e) {
       console.error("Failed to confirm delivery:", e);
       setMarketError(e instanceof Error ? e.message : "Failed to confirm delivery");
@@ -2329,19 +2362,100 @@ export default function BuyerMarketplacePage() {
 
                       {/* Step 3: Success */}
                       {confirmStep === "confirm" && (
-                        <div className="text-center py-8">
-                          <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-emerald-100 mb-4">
-                            <CheckCircle className="h-10 w-10 text-emerald-600" />
-                          </div>
-                          <h3 className="text-xl font-bold text-slate-800">Delivery Confirmed!</h3>
-                          <p className="mt-2 text-slate-600">
-                            The NFT has been transferred to your wallet and payment has been released to the seller.
-                          </p>
-                          <div className="mt-4 p-4 rounded-xl bg-emerald-50 border border-emerald-200">
-                            <p className="text-sm text-emerald-700">
-                              You can view your NFT in your wallet or check the transaction on Etherscan.
+                        <div className="py-6">
+                          <div className="text-center mb-6">
+                            <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-emerald-100 mb-4">
+                              <CheckCircle className="h-10 w-10 text-emerald-600" />
+                            </div>
+                            <h3 className="text-xl font-bold text-slate-800">Delivery Confirmed!</h3>
+                            <p className="mt-2 text-slate-600">
+                              Transaction completed successfully
                             </p>
                           </div>
+
+                          {/* Transaction Details */}
+                          {transactionDetails && (
+                            <div className="space-y-4">
+                              {/* NFT Transfer */}
+                              <div className="p-4 rounded-xl bg-blue-50 border border-blue-200">
+                                <div className="flex items-center gap-2 text-blue-700 font-semibold mb-2">
+                                  <Award className="h-5 w-5" />
+                                  NFT Transferred to Your Wallet
+                                </div>
+                                <p className="text-sm text-blue-600">
+                                  Token #{selectedBlockchainPurchase?.tokenId} is now in your wallet
+                                </p>
+                              </div>
+
+                              {/* Fund Transfer Details */}
+                              <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200">
+                                <div className="flex items-center gap-2 text-emerald-700 font-semibold mb-3">
+                                  <Send className="h-5 w-5" />
+                                  Funds Released to Seller
+                                </div>
+                                
+                                <div className="space-y-2 text-sm">
+                                  <div className="flex justify-between py-1 border-b border-emerald-200">
+                                    <span className="text-slate-600">Escrow Amount</span>
+                                    <span className="font-mono font-semibold text-slate-800">{transactionDetails.amountReleased} ETH</span>
+                                  </div>
+                                  <div className="flex justify-between py-1 border-b border-emerald-200">
+                                    <span className="text-slate-600">Platform Fee (2.5%)</span>
+                                    <span className="font-mono text-red-600">-{transactionDetails.platformFee} ETH</span>
+                                  </div>
+                                  <div className="flex justify-between py-1 border-b border-emerald-200">
+                                    <span className="font-semibold text-slate-700">Net to Seller</span>
+                                    <span className="font-mono font-bold text-emerald-600">+{transactionDetails.netToSeller} ETH</span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Seller Wallet Balance */}
+                              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
+                                <div className="text-sm font-semibold text-slate-700 mb-2">
+                                  Seller Wallet: {transactionDetails.sellerAddress.slice(0, 6)}...{transactionDetails.sellerAddress.slice(-4)}
+                                </div>
+                                <div className="grid grid-cols-2 gap-3">
+                                  <div className="p-3 rounded-lg bg-white border border-slate-100">
+                                    <div className="text-xs text-slate-400">Before</div>
+                                    <div className="font-mono text-sm font-semibold text-slate-600">
+                                      {parseFloat(transactionDetails.sellerBalanceBefore).toFixed(6)} ETH
+                                    </div>
+                                  </div>
+                                  <div className="p-3 rounded-lg bg-emerald-100 border border-emerald-200">
+                                    <div className="text-xs text-emerald-600">After</div>
+                                    <div className="font-mono text-sm font-semibold text-emerald-700">
+                                      {parseFloat(transactionDetails.sellerBalanceAfter).toFixed(6)} ETH
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="mt-2 text-center">
+                                  <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-emerald-100 text-emerald-700 text-sm font-semibold">
+                                    ↑ +{(parseFloat(transactionDetails.sellerBalanceAfter) - parseFloat(transactionDetails.sellerBalanceBefore)).toFixed(6)} ETH
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Transaction Link */}
+                              <a
+                                href={`https://sepolia.etherscan.io/tx/${transactionDetails.txHash}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center justify-center gap-2 p-3 rounded-xl bg-slate-100 hover:bg-slate-200 transition-colors text-sm font-semibold text-slate-700"
+                              >
+                                <ExternalLink className="h-4 w-4" />
+                                View Transaction on Etherscan
+                              </a>
+                            </div>
+                          )}
+
+                          {/* Close Button */}
+                          <Button
+                            className="w-full mt-6 bg-gradient-to-r from-[#0D7B7A] to-[#14a8a6]"
+                            onClick={resetFeedbackModal}
+                          >
+                            Done
+                          </Button>
                         </div>
                       )}
                     </div>
