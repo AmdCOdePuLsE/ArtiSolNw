@@ -141,9 +141,17 @@ function getProductForListing(listing: Listing) {
     const priceInr = listing.metadata.attributes?.find(a => a.trait_type === "Price (INR)")?.value || "";
     const artisan = listing.metadata.attributes?.find(a => a.trait_type === "Artisan")?.value || "";
     
+    // Check if image is a valid URL (not a blob: URL which won't work across browsers)
+    let imageUrl = listing.metadata.image || null;
+    if (imageUrl && (imageUrl.startsWith("blob:") || imageUrl.startsWith("data:image"))) {
+      // Blob URLs are temporary and won't work for buyers
+      // Use null to show placeholder instead
+      imageUrl = null;
+    }
+    
     return {
       name: listing.metadata.name || "Artisan Product",
-      image: listing.metadata.image || null,
+      image: imageUrl,
       category: category,
       description: listing.metadata.description || "Handcrafted authentic product from Indian artisans.",
       origin: "India",
