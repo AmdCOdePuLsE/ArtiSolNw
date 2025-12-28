@@ -96,6 +96,16 @@ export const ARTISOL_NFT_ABI = [
     outputs: [],
   },
   {
+    type: "function",
+    name: "isApprovedForAll",
+    stateMutability: "view",
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "operator", type: "address" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
     type: "event",
     name: "NFTMinted",
     inputs: [
