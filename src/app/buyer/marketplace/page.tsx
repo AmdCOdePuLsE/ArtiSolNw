@@ -374,19 +374,28 @@ export default function BuyerMarketplacePage() {
   async function loadListings() {
     setMarketError(null);
     setLoadingListings(true);
+    console.log("=== LOADING LISTINGS ===");
+    
     try {
-      const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL;
-      console.log("Loading listings from RPC:", rpcUrl);
+      // Use fallback values directly for reliability
+      const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL || "https://eth-sepolia.g.alchemy.com/v2/hgBu-UD8N-2ZoBs_Ts17o";
+      const marketplaceAddr = process.env.NEXT_PUBLIC_MARKETPLACE_ADDRESS || "0x278a4E4E067406c2EA1588E19F58957BD543715a";
       
-      const provider = (() => {
-        try {
-          return getRpcProvider();
-        } catch {
-          return getBrowserProvider();
-        }
-      })();
-
-      const contract = getMarketplaceReadContract(provider);
+      console.log("RPC URL:", rpcUrl);
+      console.log("Marketplace Address:", marketplaceAddr);
+      
+      // Create provider directly with ethers
+      const { providers: ethersProviders, Contract } = await import("ethers");
+      const provider = new ethersProviders.JsonRpcProvider(rpcUrl);
+      
+      // Minimal ABI for listing functions
+      const marketplaceAbi = [
+        "function listingCount() view returns (uint256)",
+        "function getListingByIndex(uint256 index) view returns (address nftContract, uint256 tokenId, address seller, uint256 priceWei, bool sold)"
+      ];
+      
+      const contract = new Contract(marketplaceAddr, marketplaceAbi, provider);
+      
       const count = await contract.listingCount();
       const n = Number(count);
       console.log("Found", n, "listings on contract");
@@ -394,14 +403,20 @@ export default function BuyerMarketplacePage() {
       const nextListings: Listing[] = [];
       for (let i = 0; i < n; i++) {
         const row = await contract.getListingByIndex(i);
-        console.log("Listing", i, ":", row);
+        console.log("Listing", i, ":", {
+          nftContract: row.nftContract,
+          tokenId: row.tokenId.toString(),
+          seller: row.seller,
+          priceWei: row.priceWei.toString(),
+          sold: row.sold
+        });
         nextListings.push({
           index: i,
-          nftContract: row[0] as string,
-          tokenId: row[1] as bigint,
-          seller: row[2] as string,
-          priceWei: row[3] as bigint,
-          sold: row[4] as boolean,
+          nftContract: row.nftContract as string,
+          tokenId: row.tokenId as bigint,
+          seller: row.seller as string,
+          priceWei: row.priceWei as bigint,
+          sold: row.sold as boolean,
         });
       }
 
