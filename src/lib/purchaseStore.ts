@@ -113,10 +113,31 @@ export function getSellerPurchases(sellerEmail: string): Purchase[] {
   return getAllPurchases().filter(p => p.sellerEmail === sellerEmail);
 }
 
-// Get pending approvals for seller
+// Get pending approvals for seller (buyer confirmed, waiting for seller to trigger NFT transfer)
 export function getSellerPendingApprovals(sellerEmail: string): Purchase[] {
   return getSellerPurchases(sellerEmail).filter(
     p => p.status === "buyer_confirmed"
+  );
+}
+
+// Get new orders for seller (purchased, waiting for seller to confirm/ship)
+export function getSellerNewOrders(sellerEmail: string): Purchase[] {
+  return getSellerPurchases(sellerEmail).filter(
+    p => p.status === "purchased"
+  );
+}
+
+// Get orders waiting for buyer delivery confirmation (seller marked as delivered)
+export function getSellerShippedOrders(sellerEmail: string): Purchase[] {
+  return getSellerPurchases(sellerEmail).filter(
+    p => p.status === "delivered"
+  );
+}
+
+// Get buyer's orders awaiting delivery confirmation
+export function getBuyerAwaitingConfirmation(buyerEmail: string): Purchase[] {
+  return getBuyerPurchases(buyerEmail).filter(
+    p => p.status === "delivered"
   );
 }
 
@@ -188,6 +209,40 @@ export function sellerApprove(purchaseId: string, response: string, nftTxHash: s
 // Mark as delivered
 export function markAsDelivered(purchaseId: string): void {
   updatePurchaseStatus(purchaseId, "delivered");
+}
+
+// Seller confirms order and marks as shipped
+export function sellerConfirmOrder(purchaseId: string, deliveryTxHash?: string): void {
+  const purchases = getAllPurchases();
+  const index = purchases.findIndex(p => p.id === purchaseId);
+  if (index !== -1) {
+    purchases[index].status = "delivered";
+    if (deliveryTxHash) {
+      purchases[index].txHash = deliveryTxHash; // Update with blockchain tx
+    }
+    savePurchases(purchases);
+  }
+}
+
+// Buyer confirms delivery with blockchain tx (triggers NFT transfer and fund release)
+export function buyerConfirmDeliveryWithTx(
+  purchaseId: string, 
+  photos: string[], 
+  feedback: string, 
+  termsAccepted: boolean,
+  confirmTxHash: string
+): void {
+  const purchases = getAllPurchases();
+  const index = purchases.findIndex(p => p.id === purchaseId);
+  if (index !== -1) {
+    purchases[index].deliveryPhotos = photos;
+    purchases[index].buyerFeedback = feedback;
+    purchases[index].buyerRating = "good";
+    purchases[index].status = "completed";
+    purchases[index].completedDate = new Date();
+    purchases[index].nftTransferTxHash = confirmTxHash;
+    savePurchases(purchases);
+  }
 }
 
 // Save purchases to storage

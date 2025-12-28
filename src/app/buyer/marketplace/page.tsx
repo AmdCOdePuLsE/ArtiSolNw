@@ -26,6 +26,8 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
+  ArrowLeft,
+  ArrowRight,
 } from "lucide-react";
 import { AuthGuard } from "@/components/AuthGuard";
 import { Badge } from "@/components/ui/badge";
@@ -46,6 +48,7 @@ import {
   getBuyerPurchases,
   generateDemoPurchases,
   buyerConfirmProduct,
+  buyerConfirmDeliveryWithTx,
   addPurchase,
 } from "@/lib/purchaseStore";
 
@@ -208,6 +211,8 @@ export default function BuyerMarketplacePage() {
   const [feedbackText, setFeedbackText] = React.useState("");
   const [feedbackRating, setFeedbackRating] = React.useState<"good" | "bad" | null>(null);
   const [isSubmittingFeedback, setIsSubmittingFeedback] = React.useState(false);
+  const [termsAccepted, setTermsAccepted] = React.useState(false);
+  const [confirmStep, setConfirmStep] = React.useState<"upload" | "terms" | "confirm">("upload");
 
   // Checkout modal state
   const [checkoutListing, setCheckoutListing] = React.useState<Listing | null>(null);
@@ -252,28 +257,80 @@ export default function BuyerMarketplacePage() {
     setFeedbackPhotos((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // Submit feedback
-  const handleSubmitFeedback = () => {
-    if (!feedbackPurchase || !feedbackRating || feedbackPhotos.length === 0) return;
+  // Submit feedback - this triggers blockchain confirmDelivery
+  const handleSubmitFeedback = async () => {
+    if (!feedbackPurchase || feedbackPhotos.length === 0 || !termsAccepted) return;
+    
+    if (!wallet) {
+      setMarketError("Please connect your wallet first");
+      return;
+    }
     
     setIsSubmittingFeedback(true);
     
-    // Simulate network delay
-    setTimeout(() => {
-      buyerConfirmProduct(
+    try {
+      const provider = getBrowserProvider();
+      await provider.send("eth_requestAccounts", []);
+      
+      // Check network
+      const network = await provider.getNetwork();
+      if (network.chainId !== 11155111) {
+        try {
+          await (window as any).ethereum.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: "0xaa36a7" }],
+          });
+        } catch (switchError: any) {
+          if (switchError.code === 4902) {
+            await (window as any).ethereum.request({
+              method: "wallet_addEthereumChain",
+              params: [{
+                chainId: "0xaa36a7",
+                chainName: "Sepolia Testnet",
+                nativeCurrency: { name: "SepoliaETH", symbol: "ETH", decimals: 18 },
+                rpcUrls: ["https://sepolia.infura.io/v3/"],
+                blockExplorerUrls: ["https://sepolia.etherscan.io"],
+              }],
+            });
+          }
+        }
+        setIsSubmittingFeedback(false);
+        setMarketError("Network switched to Sepolia. Please try again.");
+        return;
+      }
+      
+      const signer = await provider.getSigner();
+      const contract = getMarketplaceWriteContract(signer);
+      
+      // Call confirmDelivery on the blockchain - this triggers NFT transfer and fund release
+      const tx = await contract.confirmDelivery(
+        feedbackPurchase.nftContract, 
+        BigInt(feedbackPurchase.tokenId)
+      );
+      await tx.wait();
+      
+      // Update local store
+      buyerConfirmDeliveryWithTx(
         feedbackPurchase.id,
         feedbackPhotos,
         feedbackText,
-        feedbackRating
+        termsAccepted,
+        tx.hash
       );
       
       refreshPurchases();
-      setFeedbackPurchase(null);
-      setFeedbackPhotos([]);
-      setFeedbackText("");
-      setFeedbackRating(null);
+      setConfirmStep("confirm"); // Show success state
+      
+      // Auto close after showing success
+      setTimeout(() => {
+        resetFeedbackModal();
+      }, 3000);
+    } catch (e) {
+      console.error("Failed to confirm delivery:", e);
+      setMarketError(e instanceof Error ? e.message : "Failed to confirm delivery");
+    } finally {
       setIsSubmittingFeedback(false);
-    }, 1500);
+    }
   };
 
   // Reset feedback modal
@@ -282,6 +339,8 @@ export default function BuyerMarketplacePage() {
     setFeedbackPhotos([]);
     setFeedbackText("");
     setFeedbackRating(null);
+    setTermsAccepted(false);
+    setConfirmStep("upload");
   };
 
   // Checkout functions
@@ -1209,13 +1268,13 @@ export default function BuyerMarketplacePage() {
                                       purchase.status === "completed" && "bg-emerald-100 text-emerald-700 border-emerald-200",
                                       purchase.status === "delivered" && "bg-amber-100 text-amber-700 border-amber-200",
                                       purchase.status === "buyer_confirmed" && "bg-blue-100 text-blue-700 border-blue-200",
-                                      purchase.status === "purchased" && "bg-slate-100 text-slate-700 border-slate-200",
+                                      purchase.status === "purchased" && "bg-blue-100 text-blue-700 border-blue-200",
                                     )}
                                   >
                                     {purchase.status === "completed" && "✓ NFT Received"}
-                                    {purchase.status === "delivered" && "⏳ Awaiting Feedback"}
+                                    {purchase.status === "delivered" && "📦 Ready to Confirm"}
                                     {purchase.status === "buyer_confirmed" && "📋 Pending Seller Approval"}
-                                    {purchase.status === "purchased" && "📦 Processing"}
+                                    {purchase.status === "purchased" && "⏳ Awaiting Shipment"}
                                   </Badge>
                                 </div>
 
@@ -1258,14 +1317,21 @@ export default function BuyerMarketplacePage() {
 
                                 {/* Action Buttons */}
                                 <div className="mt-4 flex flex-wrap gap-2">
+                                  {purchase.status === "purchased" && (
+                                    <div className="flex items-center gap-2 text-sm text-blue-600">
+                                      <Package className="h-4 w-4" />
+                                      Waiting for seller to ship...
+                                    </div>
+                                  )}
+                                  
                                   {purchase.status === "delivered" && (
                                     <Button
                                       size="sm"
                                       onClick={() => setFeedbackPurchase(purchase)}
-                                      className="bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-600 hover:to-amber-500"
+                                      className="bg-gradient-to-r from-emerald-500 to-emerald-400 hover:from-emerald-600 hover:to-emerald-500"
                                     >
-                                      <Camera className="mr-2 h-4 w-4" />
-                                      Submit Feedback
+                                      <CheckCircle className="mr-2 h-4 w-4" />
+                                      Confirm Delivery
                                     </Button>
                                   )}
 
@@ -1720,7 +1786,7 @@ export default function BuyerMarketplacePage() {
               )}
             </AnimatePresence>
 
-            {/* Feedback Modal */}
+{/* Feedback Modal - Confirm Delivery */}
             <AnimatePresence>
               {feedbackPurchase && (
                 <motion.div
@@ -1729,7 +1795,7 @@ export default function BuyerMarketplacePage() {
                   exit={{ opacity: 0 }}
                   className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
                   onClick={(e) => {
-                    if (e.target === e.currentTarget) resetFeedbackModal();
+                    if (e.target === e.currentTarget && !isSubmittingFeedback) resetFeedbackModal();
                   }}
                 >
                   <motion.div
@@ -1741,15 +1807,21 @@ export default function BuyerMarketplacePage() {
                     {/* Modal Header */}
                     <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4">
                       <div>
-                        <h2 className="text-lg font-bold text-slate-900">Submit Product Feedback</h2>
-                        <p className="text-sm text-slate-500">Help verify the product quality</p>
+                        <h2 className="text-lg font-bold text-slate-900">Confirm Delivery</h2>
+                        <p className="text-sm text-slate-500">
+                          {confirmStep === "upload" && "Step 1: Upload product photos"}
+                          {confirmStep === "terms" && "Step 2: Accept terms and conditions"}
+                          {confirmStep === "confirm" && "Delivery confirmed!"}
+                        </p>
                       </div>
-                      <button
-                        onClick={resetFeedbackModal}
-                        className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-                      >
-                        <X className="h-5 w-5" />
-                      </button>
+                      {!isSubmittingFeedback && confirmStep !== "confirm" && (
+                        <button
+                          onClick={resetFeedbackModal}
+                          className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                        >
+                          <X className="h-5 w-5" />
+                        </button>
+                      )}
                     </div>
 
                     <div className="p-6 space-y-6">
@@ -1769,118 +1841,159 @@ export default function BuyerMarketplacePage() {
                         </div>
                       </div>
 
-                      {/* Photo Upload */}
-                      <div>
-                        <label className="block text-sm font-semibold text-slate-700 mb-2">
-                          Upload Product Photos *
-                        </label>
-                        <p className="text-xs text-slate-500 mb-3">
-                          Upload photos of the received product to verify its condition
-                        </p>
-                        
-                        <div className="grid grid-cols-3 gap-3">
-                          {feedbackPhotos.map((url, index) => (
-                            <div key={index} className="relative aspect-square rounded-xl overflow-hidden border border-slate-200">
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img src={url} alt={`Photo ${index + 1}`} className="h-full w-full object-cover" />
-                              <button
-                                onClick={() => removeFeedbackPhoto(index)}
-                                className="absolute top-1 right-1 rounded-full bg-red-500 p-1 text-white hover:bg-red-600"
-                              >
-                                <X className="h-3 w-3" />
-                              </button>
-                            </div>
-                          ))}
-                          
-                          {feedbackPhotos.length < 5 && (
-                            <label className="aspect-square rounded-xl border-2 border-dashed border-slate-300 flex flex-col items-center justify-center cursor-pointer hover:border-[#0D7B7A] hover:bg-[#0D7B7A]/5 transition-colors">
-                              <Camera className="h-6 w-6 text-slate-400" />
-                              <span className="mt-1 text-xs text-slate-500">Add Photo</span>
-                              <input
-                                type="file"
-                                accept="image/*"
-                                className="hidden"
-                                onChange={handleFeedbackPhotoUpload}
-                              />
+                      {/* Step 1: Upload Photos */}
+                      {confirmStep === "upload" && (
+                        <>
+                          {/* Photo Upload */}
+                          <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">
+                              Upload Product Photos *
                             </label>
-                          )}
-                        </div>
-                      </div>
+                            <p className="text-xs text-slate-500 mb-3">
+                              Upload photos of the received product to confirm delivery
+                            </p>
+                            
+                            <div className="grid grid-cols-3 gap-3">
+                              {feedbackPhotos.map((url, index) => (
+                                <div key={index} className="relative aspect-square rounded-xl overflow-hidden border border-slate-200">
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img src={url} alt={`Photo ${index + 1}`} className="h-full w-full object-cover" />
+                                  <button
+                                    onClick={() => removeFeedbackPhoto(index)}
+                                    className="absolute top-1 right-1 rounded-full bg-red-500 p-1 text-white hover:bg-red-600"
+                                  >
+                                    <X className="h-3 w-3" />
+                                  </button>
+                                </div>
+                              ))}
+                              
+                              {feedbackPhotos.length < 5 && (
+                                <label className="aspect-square rounded-xl border-2 border-dashed border-slate-300 flex flex-col items-center justify-center cursor-pointer hover:border-[#0D7B7A] hover:bg-[#0D7B7A]/5 transition-colors">
+                                  <Camera className="h-6 w-6 text-slate-400" />
+                                  <span className="mt-1 text-xs text-slate-500">Add Photo</span>
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    className="hidden"
+                                    onChange={handleFeedbackPhotoUpload}
+                                  />
+                                </label>
+                              )}
+                            </div>
+                          </div>
 
-                      {/* Rating */}
-                      <div>
-                        <label className="block text-sm font-semibold text-slate-700 mb-2">
-                          Product Condition *
-                        </label>
-                        <div className="flex gap-3">
-                          <button
-                            onClick={() => setFeedbackRating("good")}
-                            className={cn(
-                              "flex-1 flex items-center justify-center gap-2 rounded-xl py-4 border-2 transition-all",
-                              feedbackRating === "good"
-                                ? "border-emerald-500 bg-emerald-50 text-emerald-700"
-                                : "border-slate-200 hover:border-emerald-300 hover:bg-emerald-50/50"
-                            )}
+                          {/* Feedback Text */}
+                          <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">
+                              Additional Comments (Optional)
+                            </label>
+                            <textarea
+                              value={feedbackText}
+                              onChange={(e) => setFeedbackText(e.target.value)}
+                              placeholder="Share your experience with the product..."
+                              rows={3}
+                              className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm focus:border-[#0D7B7A] focus:outline-none focus:ring-2 focus:ring-[#0D7B7A]/20"
+                            />
+                          </div>
+
+                          {/* Next Button */}
+                          <Button
+                            className="w-full py-3 bg-gradient-to-r from-[#0D7B7A] to-[#14a8a6]"
+                            disabled={feedbackPhotos.length === 0}
+                            onClick={() => setConfirmStep("terms")}
                           >
-                            <ThumbsUp className="h-5 w-5" />
-                            <span className="font-semibold">Good</span>
-                          </button>
-                          <button
-                            onClick={() => setFeedbackRating("bad")}
-                            className={cn(
-                              "flex-1 flex items-center justify-center gap-2 rounded-xl py-4 border-2 transition-all",
-                              feedbackRating === "bad"
-                                ? "border-red-500 bg-red-50 text-red-700"
-                                : "border-slate-200 hover:border-red-300 hover:bg-red-50/50"
-                            )}
-                          >
-                            <ThumbsDown className="h-5 w-5" />
-                            <span className="font-semibold">Bad</span>
-                          </button>
+                            <ArrowRight className="mr-2 h-4 w-4" />
+                            Continue to Terms
+                          </Button>
+                        </>
+                      )}
+
+                      {/* Step 2: Terms & Conditions */}
+                      {confirmStep === "terms" && (
+                        <>
+                          {/* Terms Box */}
+                          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 max-h-60 overflow-y-auto">
+                            <h3 className="font-bold text-slate-800 mb-3">Terms & Conditions</h3>
+                            <div className="text-sm text-slate-600 space-y-3">
+                              <p><strong>1. Delivery Confirmation:</strong> By confirming delivery, you acknowledge that you have received the physical product in satisfactory condition.</p>
+                              <p><strong>2. NFT Transfer:</strong> Upon confirmation, the NFT representing ownership of this product will be transferred to your wallet address.</p>
+                              <p><strong>3. Payment Release:</strong> The payment held in escrow will be released to the seller minus platform fees (2.5%).</p>
+                              <p><strong>4. Final Sale:</strong> This transaction is final. Once confirmed, the sale cannot be reversed or refunded.</p>
+                              <p><strong>5. Authenticity Guarantee:</strong> The NFT certifies the authenticity of the artisan product. Any disputes about authenticity must be raised before confirmation.</p>
+                              <p><strong>6. No Warranty:</strong> Artisol is a marketplace platform and does not provide warranties on products sold.</p>
+                            </div>
+                          </div>
+
+                          {/* Accept Checkbox */}
+                          <label className="flex items-start gap-3 p-4 rounded-xl border-2 border-slate-200 cursor-pointer hover:border-[#0D7B7A]/50 transition-colors">
+                            <input
+                              type="checkbox"
+                              checked={termsAccepted}
+                              onChange={(e) => setTermsAccepted(e.target.checked)}
+                              className="mt-1 h-5 w-5 rounded border-slate-300 text-[#0D7B7A] focus:ring-[#0D7B7A]"
+                            />
+                            <span className="text-sm text-slate-700">
+                              I have received the product in satisfactory condition and agree to the Terms & Conditions. I understand that confirming delivery will transfer the NFT to my wallet and release payment to the seller.
+                            </span>
+                          </label>
+
+                          {/* Info Box */}
+                          <div className="flex items-start gap-3 p-4 rounded-xl bg-amber-50 border border-amber-200">
+                            <AlertCircle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+                            <div className="text-sm text-amber-700">
+                              <p className="font-semibold">Important!</p>
+                              <p className="mt-1">Once you confirm delivery, the payment will be released to the seller and you will receive the NFT. This action cannot be undone.</p>
+                            </div>
+                          </div>
+
+                          {/* Action Buttons */}
+                          <div className="flex gap-3">
+                            <Button
+                              variant="outline"
+                              className="flex-1"
+                              onClick={() => setConfirmStep("upload")}
+                            >
+                              <ArrowLeft className="mr-2 h-4 w-4" />
+                              Back
+                            </Button>
+                            <Button
+                              className="flex-1 py-3 bg-gradient-to-r from-emerald-500 to-emerald-400"
+                              disabled={!termsAccepted || isSubmittingFeedback}
+                              onClick={handleSubmitFeedback}
+                            >
+                              {isSubmittingFeedback ? (
+                                <>
+                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                  Processing...
+                                </>
+                              ) : (
+                                <>
+                                  <CheckCircle className="mr-2 h-4 w-4" />
+                                  Confirm Delivery
+                                </>
+                              )}
+                            </Button>
+                          </div>
+                        </>
+                      )}
+
+                      {/* Step 3: Success */}
+                      {confirmStep === "confirm" && (
+                        <div className="text-center py-8">
+                          <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-emerald-100 mb-4">
+                            <CheckCircle className="h-10 w-10 text-emerald-600" />
+                          </div>
+                          <h3 className="text-xl font-bold text-slate-800">Delivery Confirmed!</h3>
+                          <p className="mt-2 text-slate-600">
+                            The NFT has been transferred to your wallet and payment has been released to the seller.
+                          </p>
+                          <div className="mt-4 p-4 rounded-xl bg-emerald-50 border border-emerald-200">
+                            <p className="text-sm text-emerald-700">
+                              You can view your NFT in your wallet or check the transaction on Etherscan.
+                            </p>
+                          </div>
                         </div>
-                      </div>
-
-                      {/* Feedback Text */}
-                      <div>
-                        <label className="block text-sm font-semibold text-slate-700 mb-2">
-                          Additional Comments (Optional)
-                        </label>
-                        <textarea
-                          value={feedbackText}
-                          onChange={(e) => setFeedbackText(e.target.value)}
-                          placeholder="Share your experience with the product..."
-                          rows={3}
-                          className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm focus:border-[#0D7B7A] focus:outline-none focus:ring-2 focus:ring-[#0D7B7A]/20"
-                        />
-                      </div>
-
-                      {/* Info Box */}
-                      <div className="flex items-start gap-3 p-4 rounded-xl bg-blue-50 border border-blue-200">
-                        <AlertCircle className="h-5 w-5 text-blue-600 shrink-0 mt-0.5" />
-                        <div className="text-sm text-blue-700">
-                          <p className="font-semibold">What happens next?</p>
-                          <p className="mt-1">Once you submit, the seller will review your feedback. If both parties are satisfied, the NFT will be transferred to your wallet.</p>
-                        </div>
-                      </div>
-
-                      {/* Submit Button */}
-                      <Button
-                        className="w-full py-3 bg-gradient-to-r from-[#0D7B7A] to-[#14a8a6]"
-                        disabled={!feedbackRating || feedbackPhotos.length === 0 || isSubmittingFeedback}
-                        onClick={handleSubmitFeedback}
-                      >
-                        {isSubmittingFeedback ? (
-                          <>
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            Submitting...
-                          </>
-                        ) : (
-                          <>
-                            <Send className="mr-2 h-4 w-4" />
-                            Submit Feedback
-                          </>
-                        )}
-                      </Button>
+                      )}
                     </div>
                   </motion.div>
                 </motion.div>

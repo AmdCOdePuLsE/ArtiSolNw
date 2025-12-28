@@ -50,8 +50,10 @@ import {
   Purchase,
   getSellerPurchases,
   getSellerPendingApprovals,
+  getSellerNewOrders,
   generateDemoSellerPurchases,
   sellerApprove,
+  sellerConfirmOrder,
 } from "@/lib/purchaseStore";
 
 type ProductListing = {
@@ -137,16 +139,20 @@ export default function SellerDashboardPage() {
 
   // Pending Approvals state
   const [pendingApprovals, setPendingApprovals] = React.useState<Purchase[]>([]);
+  const [newOrders, setNewOrders] = React.useState<Purchase[]>([]);
   const [allSoldItems, setAllSoldItems] = React.useState<Purchase[]>([]);
   const [approvalResponse, setApprovalResponse] = React.useState("");
   const [isApproving, setIsApproving] = React.useState<string | null>(null);
+  const [isShipping, setIsShipping] = React.useState<string | null>(null);
   const [selectedApproval, setSelectedApproval] = React.useState<Purchase | null>(null);
+  const [selectedNewOrder, setSelectedNewOrder] = React.useState<Purchase | null>(null);
 
   // Load seller purchases
   React.useEffect(() => {
     if (session?.email) {
       generateDemoSellerPurchases(session.email);
       setPendingApprovals(getSellerPendingApprovals(session.email));
+      setNewOrders(getSellerNewOrders(session.email));
       setAllSoldItems(getSellerPurchases(session.email));
     }
   }, [session?.email]);
@@ -155,7 +161,67 @@ export default function SellerDashboardPage() {
   const refreshSellerPurchases = () => {
     if (session?.email) {
       setPendingApprovals(getSellerPendingApprovals(session.email));
+      setNewOrders(getSellerNewOrders(session.email));
       setAllSoldItems(getSellerPurchases(session.email));
+    }
+  };
+
+  // Handle seller confirming/shipping order
+  const handleShipOrder = async (purchase: Purchase) => {
+    if (!wallet) {
+      setMintError("Please connect your wallet first");
+      return;
+    }
+    
+    setIsShipping(purchase.id);
+    
+    try {
+      const provider = getBrowserProvider();
+      await provider.send("eth_requestAccounts", []);
+      
+      // Check network
+      const network = await provider.getNetwork();
+      if (network.chainId !== 11155111) {
+        try {
+          await (window as any).ethereum.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: "0xaa36a7" }],
+          });
+        } catch (switchError: any) {
+          if (switchError.code === 4902) {
+            await (window as any).ethereum.request({
+              method: "wallet_addEthereumChain",
+              params: [{
+                chainId: "0xaa36a7",
+                chainName: "Sepolia Testnet",
+                nativeCurrency: { name: "SepoliaETH", symbol: "ETH", decimals: 18 },
+                rpcUrls: ["https://sepolia.infura.io/v3/"],
+                blockExplorerUrls: ["https://sepolia.etherscan.io"],
+              }],
+            });
+          }
+        }
+        setIsShipping(null);
+        setMintError("Network switched to Sepolia. Please try again.");
+        return;
+      }
+      
+      const signer = await provider.getSigner();
+      const contract = getMarketplaceWriteContract(signer);
+      
+      // Call markDelivered on the blockchain
+      const tx = await contract.markDelivered(purchase.nftContract, BigInt(purchase.tokenId));
+      await tx.wait();
+      
+      // Update local store
+      sellerConfirmOrder(purchase.id, tx.hash);
+      refreshSellerPurchases();
+      setSelectedNewOrder(null);
+    } catch (e) {
+      console.error("Failed to mark as shipped:", e);
+      setMintError(e instanceof Error ? e.message : "Failed to confirm order");
+    } finally {
+      setIsShipping(null);
     }
   };
 
@@ -729,6 +795,154 @@ export default function SellerDashboardPage() {
               </Card>
             </motion.div>
           </div>
+
+          {/* New Orders Section - Waiting for seller to confirm and ship */}
+          {newOrders.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-8"
+            >
+              <Card className="relative overflow-hidden border border-blue-200 bg-gradient-to-br from-white via-blue-50/50 to-blue-100/30 shadow-xl">
+                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-blue-400 to-indigo-500" />
+                
+                <CardHeader className="relative">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                        <Package className="h-5 w-5 text-blue-500" />
+                        New Orders
+                      </CardTitle>
+                      <CardDescription className="text-slate-500">
+                        Buyers have paid - confirm and ship these orders
+                      </CardDescription>
+                    </div>
+                    <Badge className="bg-blue-100 text-blue-700 border border-blue-300 text-lg px-3 py-1">
+                      {newOrders.length}
+                    </Badge>
+                  </div>
+                </CardHeader>
+
+                <div className="space-y-4 px-6 pb-6">
+                  {newOrders.map((purchase, idx) => (
+                    <motion.div
+                      key={purchase.id}
+                      initial={{ opacity: 0, x: -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: idx * 0.1 }}
+                      className="overflow-hidden rounded-2xl bg-white border border-slate-200 shadow-md"
+                    >
+                      <div className="flex flex-col lg:flex-row">
+                        {/* Product Image */}
+                        <div className="relative w-full lg:w-48 aspect-video lg:aspect-square overflow-hidden bg-gradient-to-br from-slate-100 to-slate-50">
+                          {purchase.productImage ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={purchase.productImage}
+                              alt={purchase.productName}
+                              className="h-full w-full object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-full items-center justify-center">
+                              <ImageIcon className="h-12 w-12 text-slate-300" />
+                            </div>
+                          )}
+                          <Badge className="absolute top-2 right-2 bg-blue-500 text-white border-0">
+                            💰 Payment Received
+                          </Badge>
+                        </div>
+
+                        {/* Content */}
+                        <div className="flex-1 p-5">
+                          <div className="flex items-start justify-between gap-4">
+                            <div>
+                              <h3 className="font-bold text-slate-800 text-lg">{purchase.productName}</h3>
+                              <p className="text-sm text-slate-500">{purchase.category}</p>
+                            </div>
+                            <span className="text-xl font-extrabold text-[#0D7B7A]">
+                              ₹{purchase.priceInr.toLocaleString()}
+                            </span>
+                          </div>
+
+                          {/* Buyer Info */}
+                          <div className="mt-4 flex items-center gap-4 text-sm">
+                            <div className="flex items-center gap-2 text-slate-500">
+                              <User className="h-4 w-4" />
+                              <span>Buyer: {purchase.buyerEmail || purchase.buyerWallet.slice(0, 10) + "..."}</span>
+                            </div>
+                            <div className="flex items-center gap-2 text-slate-500">
+                              <Clock className="h-4 w-4" />
+                              <span>{new Date(purchase.purchaseDate).toLocaleDateString()}</span>
+                            </div>
+                          </div>
+
+                          {/* Delivery Address */}
+                          {purchase.deliveryAddress && (
+                            <div className="mt-4 p-4 rounded-xl bg-slate-50 border border-slate-200">
+                              <div className="flex items-center gap-2 mb-2">
+                                <Send className="h-4 w-4 text-[#0D7B7A]" />
+                                <span className="text-sm font-semibold text-slate-700">Ship to:</span>
+                              </div>
+                              <div className="text-sm text-slate-600">
+                                <p className="font-medium">{purchase.deliveryAddress.fullName}</p>
+                                <p>{purchase.deliveryAddress.addressLine1}</p>
+                                {purchase.deliveryAddress.addressLine2 && <p>{purchase.deliveryAddress.addressLine2}</p>}
+                                <p>{purchase.deliveryAddress.city}, {purchase.deliveryAddress.state} - {purchase.deliveryAddress.pincode}</p>
+                                <p className="mt-1">📞 {purchase.deliveryAddress.phone}</p>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Escrow Info */}
+                          <div className="mt-4 p-3 rounded-xl bg-blue-50 border border-blue-200">
+                            <div className="flex items-center gap-2">
+                              <Shield className="h-4 w-4 text-blue-600" />
+                              <span className="text-sm font-medium text-blue-700">
+                                Funds held in escrow: {purchase.priceEth} ETH
+                              </span>
+                            </div>
+                            <p className="text-xs text-blue-600 mt-1">
+                              Funds will be released after buyer confirms delivery
+                            </p>
+                          </div>
+
+                          {/* Action Buttons */}
+                          <div className="mt-4 flex flex-wrap gap-3">
+                            <Button
+                              onClick={() => handleShipOrder(purchase)}
+                              disabled={isShipping === purchase.id}
+                              className="bg-gradient-to-r from-blue-500 to-blue-400 hover:from-blue-600 hover:to-blue-500"
+                            >
+                              {isShipping === purchase.id ? (
+                                <>
+                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                  Processing...
+                                </>
+                              ) : (
+                                <>
+                                  <Send className="mr-2 h-4 w-4" />
+                                  Confirm & Ship Order
+                                </>
+                              )}
+                            </Button>
+                            <a
+                              href={`https://sepolia.etherscan.io/tx/${purchase.txHash}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-2 rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors"
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                              View Payment Tx
+                            </a>
+                          </div>
+                        </div>
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
+              </Card>
+            </motion.div>
+          )}
 
           {/* Pending Approvals Section */}
           {pendingApprovals.length > 0 && (
