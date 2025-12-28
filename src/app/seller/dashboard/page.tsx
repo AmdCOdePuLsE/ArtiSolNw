@@ -18,6 +18,7 @@ import {
   generateProductHash,
   generateTokenURI,
 } from "@/lib/contracts/artisolNFT";
+import { uploadToIPFS, isPinataConfigured } from "@/lib/ipfs";
 import { formatInr, useEthInrRate } from "@/lib/pricing";
 import { cn } from "@/lib/utils";
 import {
@@ -308,6 +309,29 @@ export default function SellerDashboardPage() {
     setTxHash(null);
 
     try {
+      // Upload images to IPFS first
+      let permanentImageUrls: string[] = [];
+      
+      if (isPinataConfigured() && proofImages.length > 0) {
+        console.log("Uploading images to IPFS...");
+        for (const file of proofImages) {
+          const result = await uploadToIPFS(file);
+          if (result.success && result.ipfsUrl) {
+            permanentImageUrls.push(result.ipfsUrl);
+            console.log("Uploaded to IPFS:", result.ipfsUrl);
+          } else {
+            console.warn("IPFS upload failed for file:", file.name, result.error);
+            // Fall back to blob URL if IPFS fails
+            const blobUrl = imagePreviewUrls[proofImages.indexOf(file)];
+            if (blobUrl) permanentImageUrls.push(blobUrl);
+          }
+        }
+      } else {
+        // Use blob URLs as fallback (not ideal but works for testing)
+        console.log("Pinata not configured, using local URLs (images won't be permanent)");
+        permanentImageUrls = [...imagePreviewUrls];
+      }
+
       // Get browser provider and signer
       const provider = getBrowserProvider();
       await provider.send("eth_requestAccounts", []);
@@ -328,13 +352,13 @@ export default function SellerDashboardPage() {
         artisan: signerAddress,
       });
 
-      // Generate token URI with metadata
+      // Generate token URI with metadata (using IPFS URLs)
       const tokenURI = generateTokenURI({
         title,
         category,
         description,
         priceInr: Number(priceInr),
-        images: imagePreviewUrls,
+        images: permanentImageUrls,
         artisan: signerAddress,
       });
 
