@@ -278,13 +278,12 @@ export const MARKETPLACE_ABI = [
   },
 ] as const;
 
+// Fallback contract address for Sepolia testnet
+const FALLBACK_MARKETPLACE_ADDRESS = "0x278a4E4E067406c2EA1588E19F58957BD543715a";
+
 export function getMarketplaceAddress() {
-  const address = process.env.NEXT_PUBLIC_MARKETPLACE_ADDRESS;
-  if (!address) {
-    throw new Error(
-      "Missing NEXT_PUBLIC_MARKETPLACE_ADDRESS (set it in .env.local after deploying)",
-    );
-  }
+  const address = process.env.NEXT_PUBLIC_MARKETPLACE_ADDRESS || FALLBACK_MARKETPLACE_ADDRESS;
+  console.log("Using Marketplace Address:", address);
   return address;
 }
 

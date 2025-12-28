@@ -127,13 +127,12 @@ export const ARTISOL_NFT_ABI = [
   },
 ] as const;
 
+// Fallback NFT contract address for Sepolia testnet
+const FALLBACK_NFT_ADDRESS = "0x4BF3114037896dEaEAEE3299306C57f2f95aB664";
+
 export function getArtisolNFTAddress(): string {
-  const address = process.env.NEXT_PUBLIC_NFT_CONTRACT_ADDRESS;
-  if (!address) {
-    throw new Error(
-      "Missing NEXT_PUBLIC_NFT_CONTRACT_ADDRESS (set it in .env.local after deploying)",
-    );
-  }
+  const address = process.env.NEXT_PUBLIC_NFT_CONTRACT_ADDRESS || FALLBACK_NFT_ADDRESS;
+  console.log("Using NFT Address:", address);
   return address;
 }
 

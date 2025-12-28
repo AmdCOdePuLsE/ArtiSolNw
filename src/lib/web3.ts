@@ -1,8 +1,11 @@
 import { providers } from "ethers";
 
+// Fallback RPC URL for Sepolia testnet (in case env var is not set)
+const FALLBACK_RPC_URL = "https://eth-sepolia.g.alchemy.com/v2/hgBu-UD8N-2ZoBs_Ts17o";
+
 export function getRpcProvider() {
-  const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL;
-  if (!rpcUrl) throw new Error("Missing NEXT_PUBLIC_RPC_URL");
+  const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL || FALLBACK_RPC_URL;
+  console.log("Using RPC URL:", rpcUrl ? rpcUrl.substring(0, 40) + "..." : "MISSING");
   return new providers.JsonRpcProvider(rpcUrl);
 }
 
