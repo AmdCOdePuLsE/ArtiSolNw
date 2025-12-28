@@ -547,6 +547,39 @@ export default function BuyerMarketplacePage() {
             {/* Marketplace Tab Content */}
             {activeTab === "marketplace" && (
               <>
+                {/* Refresh bar */}
+                <div className="mb-4 flex items-center justify-between">
+                  <div className="text-sm text-white/80">
+                    {loadingListings ? (
+                      <span className="flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Loading blockchain listings...
+                      </span>
+                    ) : listings.length > 0 ? (
+                      <span className="text-green-300">✓ {listings.length} authentic NFT{listings.length !== 1 ? 's' : ''} from blockchain</span>
+                    ) : (
+                      <span className="text-amber-300">Showing demo listings (no blockchain listings yet)</span>
+                    )}
+                  </div>
+                  <Button
+                    onClick={() => loadListings()}
+                    disabled={loadingListings}
+                    className="bg-white/20 text-white hover:bg-white/30 border-0"
+                  >
+                    {loadingListings ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <svg xmlns="http://www.w3.org/2000/svg" className="mr-2 h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                        <path d="M3 3v5h5"/>
+                        <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+                        <path d="M16 21h5v-5"/>
+                      </svg>
+                    )}
+                    Refresh
+                  </Button>
+                </div>
+
                 {marketError && (
                   <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                     {marketError} — Showing demo listings
