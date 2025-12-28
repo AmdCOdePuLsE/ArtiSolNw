@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { getSession } from "@/lib/session";
 import { getBrowserProvider, getRpcProvider } from "@/lib/web3";
-import { getMarketplaceWriteContract, getMarketplaceAddress } from "@/lib/contracts/marketplace";
+import { getMarketplaceWriteContract, getMarketplaceAddress, PurchaseStatus } from "@/lib/contracts/marketplace";
 import { getMarketplaceReadContract } from "@/lib/contracts/marketplace";
 import {
   getArtisolNFTWriteContract,
@@ -79,6 +79,23 @@ type ListingRow = {
   sold: boolean;
 };
 
+// Blockchain order type
+type BlockchainOrder = {
+  nftContract: string;
+  tokenId: string;
+  seller: string;
+  priceWei: string;
+  priceEth: number;
+  buyer: string;
+  status: PurchaseStatus;
+  purchaseTime: number;
+  metadata?: {
+    name: string;
+    description: string;
+    image: string;
+  };
+};
+
 function StatCard({ label, value, sub, icon, gradient }: { label: string; value: string; sub?: string; icon?: React.ReactNode; gradient?: string }) {
   return (
     <motion.div
@@ -146,6 +163,94 @@ export default function SellerDashboardPage() {
   const [isShipping, setIsShipping] = React.useState<string | null>(null);
   const [selectedApproval, setSelectedApproval] = React.useState<Purchase | null>(null);
   const [selectedNewOrder, setSelectedNewOrder] = React.useState<Purchase | null>(null);
+  
+  // Blockchain orders (fetched from contract)
+  const [blockchainOrders, setBlockchainOrders] = React.useState<BlockchainOrder[]>([]);
+  const [loadingBlockchainOrders, setLoadingBlockchainOrders] = React.useState(false);
+
+  // Fetch orders from blockchain for this seller
+  const fetchBlockchainOrders = React.useCallback(async () => {
+    if (!wallet) return;
+    
+    setLoadingBlockchainOrders(true);
+    try {
+      const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL || "https://eth-sepolia.g.alchemy.com/v2/hgBu-UD8N-2ZoBs_Ts17o";
+      const marketplaceAddr = process.env.NEXT_PUBLIC_MARKETPLACE_ADDRESS || "0x278a4E4E067406c2EA1588E19F58957BD543715a";
+      const nftContractAddr = process.env.NEXT_PUBLIC_NFT_CONTRACT_ADDRESS || "0x4BF3114037896dEaEAEE3299306C57f2f95aB664";
+      
+      const { providers: ethersProviders, Contract, utils: ethersUtils } = await import("ethers");
+      const provider = new ethersProviders.JsonRpcProvider(rpcUrl);
+      
+      const marketplaceAbi = [
+        "function listingCount() view returns (uint256)",
+        "function getListingByIndex(uint256 index) view returns (address nftContract, uint256 tokenId, address seller, uint256 priceWei, bool sold)",
+        "function getPurchase(address nftContract, uint256 tokenId) view returns (address buyer, uint256 amountPaid, uint8 status, uint256 purchaseTime, uint256 deliveryTime, uint256 completionTime)"
+      ];
+      
+      const nftAbi = [
+        "function tokenURI(uint256 tokenId) view returns (string)"
+      ];
+      
+      const marketplaceContract = new Contract(marketplaceAddr, marketplaceAbi, provider);
+      const nftContract = new Contract(nftContractAddr, nftAbi, provider);
+      
+      const count = await marketplaceContract.listingCount();
+      const orders: BlockchainOrder[] = [];
+      
+      for (let i = 0; i < Number(count); i++) {
+        const listing = await marketplaceContract.getListingByIndex(i);
+        const sellerAddr = listing.seller.toLowerCase();
+        
+        // Only show orders for this seller
+        if (sellerAddr !== wallet.toLowerCase()) continue;
+        
+        // Get purchase info
+        const purchase = await marketplaceContract.getPurchase(listing.nftContract, listing.tokenId);
+        
+        // Only show if there's a buyer (status > 0 means purchased)
+        if (Number(purchase.status) === 0) continue;
+        
+        // Fetch NFT metadata
+        let metadata: BlockchainOrder["metadata"];
+        try {
+          const tokenURI = await nftContract.tokenURI(listing.tokenId);
+          if (tokenURI.startsWith("data:application/json;base64,")) {
+            const base64 = tokenURI.replace("data:application/json;base64,", "");
+            const jsonString = atob(base64);
+            metadata = JSON.parse(jsonString);
+          }
+        } catch (e) {
+          console.error("Failed to fetch metadata for token", listing.tokenId.toString());
+        }
+        
+        orders.push({
+          nftContract: listing.nftContract,
+          tokenId: listing.tokenId.toString(),
+          seller: listing.seller,
+          priceWei: listing.priceWei.toString(),
+          priceEth: Number(ethersUtils.formatEther(listing.priceWei)),
+          buyer: purchase.buyer,
+          status: Number(purchase.status) as PurchaseStatus,
+          purchaseTime: Number(purchase.purchaseTime),
+          metadata,
+        });
+      }
+      
+      setBlockchainOrders(orders);
+      console.log("Found", orders.length, "blockchain orders for seller");
+    } catch (e) {
+      console.error("Failed to fetch blockchain orders:", e);
+    } finally {
+      setLoadingBlockchainOrders(false);
+    }
+  }, [wallet]);
+
+  // Load blockchain orders when wallet connects
+  React.useEffect(() => {
+    if (wallet) {
+      fetchBlockchainOrders();
+    }
+  }, [wallet, fetchBlockchainOrders]);
 
   // Load seller purchases
   React.useEffect(() => {
@@ -217,6 +322,64 @@ export default function SellerDashboardPage() {
       sellerConfirmOrder(purchase.id, tx.hash);
       refreshSellerPurchases();
       setSelectedNewOrder(null);
+    } catch (e) {
+      console.error("Failed to mark as shipped:", e);
+      setMintError(e instanceof Error ? e.message : "Failed to confirm order");
+    } finally {
+      setIsShipping(null);
+    }
+  };
+
+  // Handle blockchain order confirmation (for orders from blockchain)
+  const handleBlockchainShipOrder = async (order: BlockchainOrder) => {
+    if (!wallet) {
+      setMintError("Please connect your wallet first");
+      return;
+    }
+    
+    setIsShipping(order.tokenId);
+    
+    try {
+      const provider = getBrowserProvider();
+      await provider.send("eth_requestAccounts", []);
+      
+      // Check network
+      const network = await provider.getNetwork();
+      if (network.chainId !== 11155111) {
+        try {
+          await (window as unknown as { ethereum: { request: (args: { method: string; params: unknown[] }) => Promise<unknown> } }).ethereum.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: "0xaa36a7" }],
+          });
+        } catch (switchError: unknown) {
+          if ((switchError as { code?: number }).code === 4902) {
+            await (window as unknown as { ethereum: { request: (args: { method: string; params: unknown[] }) => Promise<unknown> } }).ethereum.request({
+              method: "wallet_addEthereumChain",
+              params: [{
+                chainId: "0xaa36a7",
+                chainName: "Sepolia Testnet",
+                nativeCurrency: { name: "SepoliaETH", symbol: "ETH", decimals: 18 },
+                rpcUrls: ["https://sepolia.infura.io/v3/"],
+                blockExplorerUrls: ["https://sepolia.etherscan.io"],
+              }],
+            });
+          }
+        }
+        setIsShipping(null);
+        setMintError("Network switched to Sepolia. Please try again.");
+        return;
+      }
+      
+      const signer = await provider.getSigner();
+      const contract = getMarketplaceWriteContract(signer);
+      
+      // Call markDelivered on the blockchain
+      const tx = await contract.markDelivered(order.nftContract, BigInt(order.tokenId));
+      await tx.wait();
+      
+      // Refresh blockchain orders
+      await fetchBlockchainOrders();
+      setMintError(null);
     } catch (e) {
       console.error("Failed to mark as shipped:", e);
       setMintError(e instanceof Error ? e.message : "Failed to confirm order");
@@ -795,6 +958,211 @@ export default function SellerDashboardPage() {
               </Card>
             </motion.div>
           </div>
+
+          {/* Blockchain Orders Section - Orders from the actual blockchain */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-8"
+          >
+            <Card className="relative overflow-hidden border border-blue-200 bg-gradient-to-br from-white via-blue-50/50 to-blue-100/30 shadow-xl">
+              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-blue-400 to-indigo-500" />
+              
+              <CardHeader className="relative">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                      <Package className="h-5 w-5 text-blue-500" />
+                      Orders (from Blockchain)
+                    </CardTitle>
+                    <CardDescription className="text-slate-500">
+                      All purchases made on your listings - click to confirm and ship
+                    </CardDescription>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      onClick={fetchBlockchainOrders}
+                      disabled={loadingBlockchainOrders || !wallet}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      {loadingBlockchainOrders ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <>Refresh</>
+                      )}
+                    </Button>
+                    {blockchainOrders.length > 0 && (
+                      <Badge className="bg-blue-100 text-blue-700 border border-blue-300 text-lg px-3 py-1">
+                        {blockchainOrders.length}
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+              </CardHeader>
+
+              {!wallet ? (
+                <div className="px-6 pb-6">
+                  <div className="rounded-xl bg-slate-50 border border-slate-200 p-6 text-center">
+                    <p className="text-slate-600">Connect your wallet to see orders</p>
+                    <Button onClick={connectWallet} className="mt-3">
+                      Connect Wallet
+                    </Button>
+                  </div>
+                </div>
+              ) : loadingBlockchainOrders ? (
+                <div className="flex items-center justify-center py-12 px-6">
+                  <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+                  <span className="ml-3 text-slate-600">Loading orders from blockchain...</span>
+                </div>
+              ) : blockchainOrders.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 px-6 text-center">
+                  <div className="rounded-full bg-blue-100 p-4">
+                    <Package className="h-8 w-8 text-blue-500" />
+                  </div>
+                  <p className="mt-4 text-slate-600">No orders yet</p>
+                  <p className="text-sm text-slate-500">Orders will appear here when buyers purchase your products</p>
+                </div>
+              ) : (
+                <div className="space-y-4 px-6 pb-6">
+                  {blockchainOrders.map((order, idx) => (
+                    <motion.div
+                      key={`${order.nftContract}-${order.tokenId}`}
+                      initial={{ opacity: 0, x: -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: idx * 0.1 }}
+                      className="overflow-hidden rounded-2xl bg-white border border-slate-200 shadow-md"
+                    >
+                      <div className="flex flex-col lg:flex-row">
+                        {/* Product Image */}
+                        <div className="relative w-full lg:w-48 aspect-video lg:aspect-square overflow-hidden bg-gradient-to-br from-slate-100 to-slate-50">
+                          {order.metadata?.image ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={order.metadata.image}
+                              alt={order.metadata.name || "Product"}
+                              className="h-full w-full object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-full items-center justify-center">
+                              <ImageIcon className="h-12 w-12 text-slate-300" />
+                            </div>
+                          )}
+                          {/* Status Badge */}
+                          <Badge className={cn(
+                            "absolute top-2 right-2 border-0",
+                            order.status === PurchaseStatus.ESCROW && "bg-blue-500 text-white",
+                            order.status === PurchaseStatus.DELIVERED && "bg-amber-500 text-white",
+                            order.status === PurchaseStatus.COMPLETED && "bg-emerald-500 text-white",
+                          )}>
+                            {order.status === PurchaseStatus.ESCROW && "💰 Payment Received"}
+                            {order.status === PurchaseStatus.DELIVERED && "📦 Shipped"}
+                            {order.status === PurchaseStatus.COMPLETED && "✓ Completed"}
+                          </Badge>
+                        </div>
+
+                        {/* Content */}
+                        <div className="flex-1 p-5">
+                          <div className="flex items-start justify-between gap-4">
+                            <div>
+                              <h3 className="font-bold text-slate-800 text-lg">
+                                {order.metadata?.name || `Token #${order.tokenId}`}
+                              </h3>
+                              <p className="text-sm text-slate-500">Token ID: {order.tokenId}</p>
+                            </div>
+                            <span className="text-xl font-extrabold text-[#0D7B7A]">
+                              {order.priceEth} ETH
+                            </span>
+                          </div>
+
+                          {/* Buyer Info */}
+                          <div className="mt-4 flex items-center gap-4 text-sm">
+                            <div className="flex items-center gap-2 text-slate-500">
+                              <User className="h-4 w-4" />
+                              <span>Buyer: {order.buyer.slice(0, 6)}...{order.buyer.slice(-4)}</span>
+                            </div>
+                            <div className="flex items-center gap-2 text-slate-500">
+                              <Clock className="h-4 w-4" />
+                              <span>{new Date(order.purchaseTime * 1000).toLocaleDateString()}</span>
+                            </div>
+                          </div>
+
+                          {/* Escrow Info */}
+                          {order.status === PurchaseStatus.ESCROW && (
+                            <div className="mt-4 p-3 rounded-xl bg-blue-50 border border-blue-200">
+                              <div className="flex items-center gap-2">
+                                <Shield className="h-4 w-4 text-blue-600" />
+                                <span className="text-sm font-medium text-blue-700">
+                                  Funds held in escrow: {order.priceEth} ETH
+                                </span>
+                              </div>
+                              <p className="text-xs text-blue-600 mt-1">
+                                Click "Confirm & Ship" to notify the buyer that the order is on its way
+                              </p>
+                            </div>
+                          )}
+
+                          {order.status === PurchaseStatus.DELIVERED && (
+                            <div className="mt-4 p-3 rounded-xl bg-amber-50 border border-amber-200">
+                              <div className="flex items-center gap-2">
+                                <Package className="h-4 w-4 text-amber-600" />
+                                <span className="text-sm font-medium text-amber-700">
+                                  Waiting for buyer to confirm delivery
+                                </span>
+                              </div>
+                            </div>
+                          )}
+
+                          {order.status === PurchaseStatus.COMPLETED && (
+                            <div className="mt-4 p-3 rounded-xl bg-emerald-50 border border-emerald-200">
+                              <div className="flex items-center gap-2">
+                                <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                                <span className="text-sm font-medium text-emerald-700">
+                                  Transaction complete! Payment released to your wallet.
+                                </span>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Action Buttons */}
+                          <div className="mt-4 flex flex-wrap gap-3">
+                            {order.status === PurchaseStatus.ESCROW && (
+                              <Button
+                                onClick={() => handleBlockchainShipOrder(order)}
+                                disabled={isShipping === order.tokenId}
+                                className="bg-gradient-to-r from-blue-500 to-blue-400 hover:from-blue-600 hover:to-blue-500"
+                              >
+                                {isShipping === order.tokenId ? (
+                                  <>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    Processing...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Send className="mr-2 h-4 w-4" />
+                                    Confirm & Ship Order
+                                  </>
+                                )}
+                              </Button>
+                            )}
+                            <a
+                              href={`https://sepolia.etherscan.io/address/${order.nftContract}?a=${order.tokenId}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-2 rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors"
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                              View on Etherscan
+                            </a>
+                          </div>
+                        </div>
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          </motion.div>
 
           {/* New Orders Section - Waiting for seller to confirm and ship */}
           {newOrders.length > 0 && (
