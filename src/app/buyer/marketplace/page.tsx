@@ -375,6 +375,9 @@ export default function BuyerMarketplacePage() {
     setMarketError(null);
     setLoadingListings(true);
     try {
+      const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL;
+      console.log("Loading listings from RPC:", rpcUrl);
+      
       const provider = (() => {
         try {
           return getRpcProvider();
@@ -386,10 +389,12 @@ export default function BuyerMarketplacePage() {
       const contract = getMarketplaceReadContract(provider);
       const count = await contract.listingCount();
       const n = Number(count);
+      console.log("Found", n, "listings on contract");
 
       const nextListings: Listing[] = [];
       for (let i = 0; i < n; i++) {
         const row = await contract.getListingByIndex(i);
+        console.log("Listing", i, ":", row);
         nextListings.push({
           index: i,
           nftContract: row[0] as string,
@@ -401,8 +406,10 @@ export default function BuyerMarketplacePage() {
       }
 
       setListings(nextListings.reverse());
+      console.log("Listings loaded successfully:", nextListings.length);
     } catch (e) {
       // If no listings from contract, show demo data
+      console.error("Error loading listings:", e);
       setListings([]);
       setMarketError(
         e instanceof Error ? e.message : "Failed to load listings"
