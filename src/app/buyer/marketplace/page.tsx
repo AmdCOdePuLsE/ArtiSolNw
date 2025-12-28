@@ -296,11 +296,14 @@ export default function BuyerMarketplacePage() {
         const nftContract = listing[0];
         const tokenId = listing[1];
         
-        // Get purchase info
+        // Get purchase info - returns (buyer, amountPaid, status, purchaseTime, deliveryTime, completionTime)
         const purchaseInfo = await contract.getPurchase(nftContract, tokenId);
         const buyer = purchaseInfo[0];
-        const status = Number(purchaseInfo[1]) as PurchaseStatus;
-        const purchaseTime = Number(purchaseInfo[2]);
+        const amountPaid = purchaseInfo[1];
+        const status = Number(purchaseInfo[2]) as PurchaseStatus;
+        const purchaseTime = Number(purchaseInfo[3]);
+        
+        console.log(`Listing ${i}: buyer=${buyer}, status=${status}, wallet=${wallet}`);
         
         // Only include purchases where this wallet is the buyer and status > 0
         if (buyer.toLowerCase() === wallet.toLowerCase() && status > 0) {
@@ -323,8 +326,8 @@ export default function BuyerMarketplacePage() {
             tokenId: tokenId.toString(),
             seller,
             buyer,
-            priceWei,
-            priceEth: ethersUtils.formatEther(priceWei),
+            priceWei: amountPaid, // Use actual amount paid from purchase
+            priceEth: ethersUtils.formatEther(amountPaid),
             status,
             purchaseTime,
             metadata,
