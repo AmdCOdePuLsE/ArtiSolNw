@@ -342,6 +342,38 @@ export default function BuyerMarketplacePage() {
       // Request account access to ensure wallet is connected
       await provider.send("eth_requestAccounts", []);
       
+      // Check if we're on Sepolia network (chainId 11155111)
+      const network = await provider.getNetwork();
+      if (network.chainId !== 11155111) {
+        // Try to switch to Sepolia
+        try {
+          await (window as any).ethereum.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: "0xaa36a7" }], // 11155111 in hex
+          });
+        } catch (switchError: any) {
+          // If Sepolia is not added, add it
+          if (switchError.code === 4902) {
+            await (window as any).ethereum.request({
+              method: "wallet_addEthereumChain",
+              params: [{
+                chainId: "0xaa36a7",
+                chainName: "Sepolia Testnet",
+                nativeCurrency: { name: "SepoliaETH", symbol: "ETH", decimals: 18 },
+                rpcUrls: ["https://sepolia.infura.io/v3/"],
+                blockExplorerUrls: ["https://sepolia.etherscan.io"],
+              }],
+            });
+          } else {
+            throw new Error("Please switch to Sepolia testnet in MetaMask");
+          }
+        }
+        // Re-get provider after network switch
+        setMarketError("Network switched to Sepolia. Please try again.");
+        setIsProcessingPayment(false);
+        return;
+      }
+      
       const signer = await provider.getSigner();
       const contract = getMarketplaceWriteContract(signer);
       
